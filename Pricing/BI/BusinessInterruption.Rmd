@@ -1,0 +1,269 @@
+---
+title: "GLM_BI_Pricing"
+output: html_document
+date: "2026-02-23"
+---
+
+# Importing Libraries and setting directories
+```{r setup, include=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(MASS)
+library(purrr)
+
+data_path <- '/Users/jeong-ilseung/ACTL5100/00_DataPrep/OutputData/'
+
+bi_freq_model_clean <- read_csv(paste0(data_path, "bi_freq_model.csv"))
+bi_sev_model_clean <- read_csv(paste0(data_path, "bi_sev_model.csv"))
+
+source(paste0(getwd(), '/BI_functions.R'))
+```
+
+# Frequency Modelling
+## Data check for Frequency
+```{r data check freq}
+source(paste0(getwd(), '/BI_freq_reconciliation.R'))
+```
+
+## Data Casting for Frequency Modelling
+```{r data cast freq}
+# Casting DF
+df_freq <- bi_freq_model_clean %>%
+  mutate(
+    supply_chain_index   = as.numeric(supply_chain_index),
+    avg_crew_exp         = as.numeric(avg_crew_exp),
+    maintenance          = as.numeric(maintenance),
+    production_load      = as.numeric(production_load),
+    energy_backup_score  = as.numeric(energy_backup_score),
+    safety_compliance    = as.numeric(safety_compliance),
+    station_id           = factor(station_id),
+    solar_system         = factor(solar_system)
+  ) %>%
+  filter(!is.na(claim_count), exposure > 0)
+
+df_freq <- na.omit(df_freq)
+```
+
+## Poisson GLM Modelling
+```{r GLM freq}
+# Poisson GLM with lowest AIC was selected (for all candidate see BI_freq_GLM.R)
+
+model_freq <-glm.nb(
+  claim_count ~
+    supply_chain_index +
+    maintenance + energy_backup_score  +
+    offset(log(exposure)),
+  data = df_freq
+)
+
+summary(model_freq)
+```
+
+# Severity Modelling
+## Data check for Severity
+```{r data check sev}
+source(paste0(getwd(), '/BI_sev_reconciliation.R'))
+```
+
+## Data Casting for Severity Modelling
+```{r data cast sev}
+# Casting DF
+df_sev <- bi_sev_model_clean %>%
+  mutate(
+    supply_chain_index   = as.numeric(supply_chain_index),
+    avg_crew_exp         = as.numeric(avg_crew_exp),
+    maintenance         = as.numeric(maintenance_freq),
+    production_load      = as.numeric(production_load),
+    energy_backup_score  = as.numeric(energy_backup_score),
+    safety_compliance    = as.numeric(safety_compliance),
+    station_id           = factor(station_id),
+    solar_system         = factor(solar_system)
+  ) %>%
+  dplyr::select(-maintenance_freq)
+
+df_sev <- na.omit(df_sev)
+```
+
+## Gamma GLM Modelling
+```{r GLM sev}
+# Gamma GLM with lowest AIC was selected (for all candidate see WC_sev_GLM.R)
+
+m <- lm(log(claim_amount) ~ 1, data = df_sev)
+
+mu    <- coef(m)[1]
+sigma <- summary(m)$sigma
+```
+
+# NB Table
+```{r NB generator}
+set.seed(123)
+nb_data_bi <- make_nb_data_bi_sep(df_freq, nb_entry_table)
+```
+
+# Simulation
+## 1 Year Simulation
+```{r 1yr simul}
+# Change the parameters from bi function to stress test
+n_sim <- 100000
+n_years <- 1
+loading <- 0.5
+inflation_vec <- rep(0.025, n_years) # Will not be used in short term 
+interest_vec  <- rep(0.018, n_years) # Will not be used in short term 
+
+# Run simulation
+sim_results_bi <- run_nb_bi_simulation(
+  nb_data_bi   = nb_data_bi,
+  model_freq   = model_freq,
+  mu           = mu,
+  sigma        = sigma,
+  n_sim        = n_sim,
+  n_years      = n_years,
+  loading      = loading,
+  inflation_vec = inflation_vec,
+  interest_vec  = interest_vec
+)
+
+# Save results
+saveRDS(sim_results_bi, file = paste0(getwd(), "/sim_results_bi_shortterm.rds"))
+
+# Summary
+summary(sim_results_bi)
+
+if (n_years == 1) {
+  
+  mean(sim_results_bi$aggregate_loss)
+  sd(sim_results_bi$aggregate_loss)
+  quantile(sim_results_bi$aggregate_loss, c(0.5,0.9, 0.95, 0.99, 0.995))
+  
+  mean(sim_results_bi$profit)
+  sd(sim_results_bi$profit)
+  quantile(sim_results_bi$profit, c(0.005, 0.01, 0.05, 0.1, 0.5))
+  
+  mean(sim_results_bi$profit < 0)
+  
+  hist(
+    sim_results_bi$aggregate_loss,
+    breaks = 40,
+    main = "Aggregate Loss Distribution for NB BI Portfolio",
+    xlab = "Aggregate Loss"
+  )
+  
+  hist(
+    sim_results_bi$profit,
+    breaks = 40,
+    main = "Profit Distribution for NB BI Portfolio",
+    xlab = "Profit"
+  )
+  
+} else {
+  
+  mean(sim_results_bi$pv_aggregate_loss)
+  sd(sim_results_bi$pv_aggregate_loss)
+  quantile(sim_results_bi$pv_aggregate_loss, c(0.5,0.9, 0.95, 0.99, 0.995))
+  
+  mean(sim_results_bi$pv_aggregate_profit)
+  sd(sim_results_bi$pv_aggregate_profit)
+  quantile(sim_results_bi$pv_aggregate_profit, c(0.005, 0.01, 0.05, 0.1, 0.5))
+  
+  mean(sim_results_bi$pv_aggregate_profit < 0)
+  
+  hist(
+    sim_results_bi$pv_aggregate_loss,
+    breaks = 40,
+    main = "PV Aggregate Loss Distribution (Long-Term BI NB Portfolio)",
+    xlab = "PV Aggregate Loss"
+  )
+  
+  hist(
+    sim_results_bi$pv_aggregate_profit,
+    breaks = 40,
+    main = "PV Aggregate Profit Distribution (Long-Term BI NB Portfolio)",
+    xlab = "PV Aggregate Profit"
+  )
+}
+```
+
+## 10 Year Simulation
+```{r 10yr simul}
+n_sim <- 100000
+n_years <- 10
+loading <- 0.5
+inflation_vec <- rep(0.025, n_years)
+interest_vec  <- rep(0.018, n_years)
+
+# Run simulation
+sim_results_bi <- run_nb_bi_simulation(
+  nb_data_bi   = nb_data_bi,
+  model_freq   = model_freq,
+  mu           = mu,
+  sigma        = sigma,
+  n_sim        = n_sim,
+  n_years      = n_years,
+  loading      = loading,
+  inflation_vec = inflation_vec,
+  interest_vec  = interest_vec
+)
+
+# Save results
+saveRDS(sim_results_bi,file = paste0(getwd(), "/sim_results_bi_longterm.rds"))
+
+# Summary
+summary(sim_results_bi)
+
+if (n_years == 1) {
+  
+  mean(sim_results_bi$aggregate_loss)
+  sd(sim_results_bi$aggregate_loss)
+  quantile(sim_results_bi$aggregate_loss, c(0.5, 0.75, 0.9, 0.95, 0.99, 0.995))
+  
+  mean(sim_results_bi$profit)
+  sd(sim_results_bi$profit)
+  quantile(sim_results_bi$profit, c(0.005, 0.01, 0.1, 0.5, 0.75, 0.9, 0.95, 0.99, 0.995))
+  
+  mean(sim_results_bi$profit < 0)
+  
+  hist(
+    sim_results_bi$aggregate_loss,
+    breaks = 40,
+    main = "Aggregate Loss Distribution for NB BI Portfolio",
+    xlab = "Aggregate Loss"
+  )
+  
+  hist(
+    sim_results_bi$profit,
+    breaks = 40,
+    main = "Profit Distribution for NB BI Portfolio",
+    xlab = "Profit"
+  )
+  
+} else {
+  
+  mean(sim_results_bi$pv_aggregate_loss)
+  sd(sim_results_bi$pv_aggregate_loss)
+  quantile(sim_results_bi$pv_aggregate_loss, c(0.5, 0.75, 0.9, 0.95, 0.99, 0.995))
+  
+  mean(sim_results_bi$pv_aggregate_profit)
+  sd(sim_results_bi$pv_aggregate_profit)
+  quantile(sim_results_bi$pv_aggregate_profit, c(0.005, 0.01, 0.05, 0.5, 0.95, 0.99))
+  
+  sim_results_bi$pv_aggregate_profit <- 0.8*sim_results_bi$pv_aggregate_premium - sim_results_bi$pv_aggregate_loss
+  mean(sim_results_bi$pv_aggregate_profit < 0)
+  
+  hist(
+    sim_results_bi$pv_aggregate_loss,
+    breaks = 40,
+    main = "PV Aggregate Loss Distribution (Long-Term BI NB Portfolio)",
+    xlab = "PV Aggregate Loss"
+  )
+  
+  hist(
+    sim_results_bi$pv_aggregate_profit,
+    breaks = 40,
+    main = "PV Aggregate Profit Distribution (Long-Term BI NB Portfolio)",
+    xlab = "PV Aggregate Profit"
+  )
+}
+```
