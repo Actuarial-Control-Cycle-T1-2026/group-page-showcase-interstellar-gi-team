@@ -7,3 +7,4 @@
 00_DataPrep/IntermediateOutput/
 00_DataPrep/OutputData/
 00_DataPrep/RawData/*.xlsx
+*.rds
