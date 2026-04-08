@@ -1,0 +1,368 @@
+---
+title: "GLM_WC_Pricing"
+output: html_document
+date: "2026-02-23"
+---
+
+# Importing Libraries and setting directories
+```{r setup, include=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(glmmTMB)
+library(purrr)
+
+data_path <- '/Users/jeong-ilseung/ACTL5100/00_DataPrep/OutputData/'
+
+wc_freq_model_clean <- read_csv(paste0(data_path, "wc_freq_model.csv"))
+wc_sev_model_clean <- read_csv(paste0(data_path, "wc_sev_model.csv"))
+
+source(paste0(getwd(), '/WC_functions.R'))
+```
+
+# Frequency Modelling
+## Data check for Frequency
+```{r data check freq}
+source(paste0(getwd(), '/WC_freq_reconciliation.R'))
+```
+
+## Data Casting for Frequency Modelling
+```{r data cast freq}
+# Casting DF
+df_freq <- wc_freq_model_clean %>%
+  mutate(
+    station_id = factor(station_id),
+    solar_system = factor(solar_system),
+    occupation = factor(occupation),
+    employment_type = factor(employment_type),
+    experience_yrs = as.numeric(experience_yrs),
+    exposure = as.numeric(exposure),
+    accident_history_flag = as.numeric(accident_history_flag),
+    psych_stress_index = as.numeric(psych_stress_index),
+    hours_per_week = as.numeric(hours_per_week),
+    supervision_level = as.numeric(supervision_level),
+    gravity_level = as.numeric(gravity_level),
+    safety_training_index = as.numeric(safety_training_index),
+    protective_gear_quality = as.numeric(protective_gear_quality),
+    base_salary = as.numeric(base_salary),
+    claim_count = as.numeric(claim_count)
+  ) %>%
+  filter(!is.na(claim_count), exposure > 0) %>%
+  dplyr::select(-policy_id, - worker_id)
+
+df_freq <- na.omit(df_freq)
+```
+
+## Poisson GLM Modelling
+```{r GLM freq}
+
+model_freq <-glm(
+  claim_count ~
+    solar_system +
+    occupation +
+    accident_history_flag +
+    psych_stress_index + 
+    safety_training_index +
+    offset(log(exposure)),
+  family = poisson(link="log"),
+  data = df_freq
+)
+
+summary(model_freq)
+```
+
+# Severity Modelling
+## Data check for Severity
+```{r data check sev}
+source(paste0(getwd(), '/WC_sev_reconciliation.R'))
+```
+
+## Data Casting for Severity Modelling
+```{r data cast sev}
+# Casting DF
+df_sev <- wc_sev_model_clean %>%
+  mutate(
+    station_id = factor(station_id),
+    solar_system = factor(solar_system),
+    occupation = factor(occupation),
+    employment_type = factor(employment_type),
+    injury_type = factor(injury_type),
+    injury_cause = factor(injury_cause),
+
+    claim_length = as.numeric(claim_length),
+    claim_amount = as.numeric(claim_amount),
+    experience_yrs = as.numeric(experience_yrs),
+    exposure = as.numeric(exposure),
+    accident_history_flag = as.numeric(accident_history_flag),
+    psych_stress_index = as.numeric(psych_stress_index),
+    hours_per_week = as.numeric(hours_per_week),
+    supervision_level = as.numeric(supervision_level),
+    gravity_level = as.numeric(gravity_level),
+    safety_training_index = as.numeric(safety_training_index),
+    protective_gear_quality = as.numeric(protective_gear_quality),
+    base_salary = as.numeric(base_salary),
+    log_salary = log(base_salary)
+  ) %>%
+  filter(
+    !is.na(claim_amount),
+    claim_amount > 0,
+    !is.na(base_salary),
+    base_salary > 0
+  ) %>%
+  dplyr::select(-claim_id, -claim_seq, -policy_id, -worker_id, -claim_length,-claim_count)
+
+df_sev <- na.omit(df_sev)
+```
+
+## Gamma GLM Modelling
+```{r GLM sev}
+
+model_sev <- glm(
+  claim_amount ~
+    psych_stress_index +
+    hours_per_week +
+    supervision_level +
+    gravity_level +
+    safety_training_index +
+    protective_gear_quality +
+    log_salary +
+    employment_type +
+    occupation +
+    solar_system,
+  family = Gamma(link = "log"),
+  data = df_sev
+)
+
+summary(model_sev)
+```
+
+# Probability Table for Injury Cause and Type by Occupation
+```{r Injury Probability Model}
+# Injury probability table
+injury_prob_table <- df_sev %>%
+  group_by(occupation, injury_type, injury_cause) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(occupation) %>%
+  mutate(prob = n / sum(n)) %>%
+  ungroup()
+
+# fallback table if an occupation has no matching injury profile
+injury_prob_table_all <- df_sev %>%
+  group_by(injury_type, injury_cause) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(prob = n / sum(n))
+```
+
+# NB Table
+```{r NB generator}
+# Note: This process is computationally intensive. 
+# If regeneration is not required, consider using the saved dataset instead.
+# Random Seed set to 123
+set.seed(123)
+
+# NB config file
+source(paste0(getwd(), '/WC_NB_mapping_table.R'))
+
+# Create portfolio
+nb_data_base <- make_nb_wc_data(
+  df_freq = df_freq,
+  df_sev = df_sev,
+  nb_workforce = nb_workforce,
+  occupation_map = occupation_map
+)
+
+nb_10y <- make_nb_wc_data_10y(
+  df_freq        = df_freq,
+  df_sev         = df_sev,
+  nb_workforce   = nb_workforce,
+  occupation_map = occupation_map,
+  worker_influx  = worker_influx
+)
+
+nb_entrants <- nb_10y$entrants
+nb_panel    <- nb_10y$panel
+
+# saveRDS(nb_entrants, file = paste0(getwd(), "/nb_entrants.rds"))
+# saveRDS(nb_panel, file = paste0(getwd(), "/nb_panel.rds"))
+
+# nb_entrants <- readRDS(paste0(getwd(), '/nb_entrants.rds'))
+# nb_panel <- readRDS(paste0(getwd(), '/nb_panel.rds'))
+```
+
+# NB Pricing
+```{r NB Pricing}
+# Filter initial year NB only for short term
+nb_data_base <- nb_entrants %>% filter(added_year <= 1)
+# Expected Loss Calculation
+# Note: This process is computationally intensive. 
+# If regeneration is not required, consider using the saved dataset instead.
+source(paste0(getwd(), '/WC_NB_data_generator.R'))
+# expected_sev_by_worker_base <- readRDS(paste0(getwd(), '/expected_sev_by_worker_base.rds'))
+
+# Parameter settings
+loading <- 0.20 # Premium Loading to the expected loss
+
+# Compute frequency prediction
+freq_pred_base <- predict(
+  model_freq,
+  newdata = nb_data_base,
+  type = "response"
+)
+
+# Calculate aggregate premium
+expected_loss_by_worker_base <- freq_pred_base * expected_sev_by_worker_base
+aggregate_expected_loss_base <- sum(expected_loss_by_worker_base, na.rm = TRUE)
+aggregate_earnings_base      <- aggregate_expected_loss_base * (1 + loading)
+```
+
+# NB Short-term Simulation
+```{r NB short-term simulation}
+# Run simulations
+# Note: This process is computationally intensive. 
+# If regeneration is not required, consider using the saved dataset instead.
+
+n_sim <- 10000
+sim_list <- vector("list", n_sim)
+
+# Sigma of Gamma
+phi_sev <- sigma(model_sev)
+
+for (sim in seq_len(n_sim)) {
+  sim_list[[sim]] <- simulate_one_nb_wc_fast(
+    nb_data_base = nb_data_base,
+    freq_pred_base = freq_pred_base,
+    aggregate_expected_loss_base = aggregate_expected_loss_base,
+    aggregate_earnings_base = aggregate_earnings_base,
+    model_sev = model_sev,
+    df_sev = df_sev,
+    injury_prob_table = injury_prob_table,
+    injury_prob_table_all = injury_prob_table_all,
+    phi_sev = phi_sev
+  )
+  
+  message("Completed simulation iteration: ", sim, " / ", n_sim)
+}
+
+sim_results_wc <- bind_rows(sim_list)
+
+# saveRDS(sim_results_wc, file = paste0(getwd(), "/sim_results_wc_s2.rds"))
+# sim_results_wc <- readRDS(paste0(getwd(), '/sim_results_wc.rds'))
+
+# Summary
+summary(sim_results_wc)
+
+## Aggregate Loss
+mean(sim_results_wc$aggregate_loss)
+sd(sim_results_wc$aggregate_loss)
+quantile(sim_results_wc$aggregate_loss, c(0.5, 0.9, 0.95, 0.99, 0.995))
+
+# Probability of Loss
+mean(sim_results_wc$profit < 0)
+
+## Aggregate Loss
+mean(sim_results_wc$profit)
+sd(sim_results_wc$profit)
+quantile(sim_results_wc$profit, c(0.005, 0.01,0.05, 0.1, 0.5))
+
+# Plots
+hist(
+  sim_results_wc$aggregate_loss,
+  breaks = 40,
+  main = "Aggregate Loss Distribution for NB Workers' Comp Portfolio",
+  xlab = "Aggregate Loss"
+)
+
+hist(
+  sim_results_wc$profit,
+  breaks = 40,
+  main = "Profit Distribution for NB Workers' Comp Portfolio",
+  xlab = "Profit"
+)
+```
+
+
+# NB Long-term Simulation
+```{r Long-term Simulation}
+# Filter full entrant table once
+nb_data_all <- nb_entrants
+
+# Expected Loss Calculation
+# Note: This process is computationally intensive.
+# If regeneration is not required, consider using the saved dataset instead.
+source(paste0(getwd(), '/WC_NB_data_generator_all.R'))
+# expected_sev_by_worker_base <- readRDS(paste0(getwd(), '/expected_sev_by_worker_base_all.rds'))
+
+freq_pred_all <- predict(
+  model_freq,
+  newdata = nb_data_all,
+  type = "response",
+  re.form = NA,
+  allow.new.levels = TRUE
+)
+
+# expected_sev_by_worker_base should correspond to nb_data_all
+# If not, you need the full vector saved for all entrants, not just year 1
+expected_sev_all <- expected_sev_by_worker_base
+expected_loss_by_worker_all <- freq_pred_all * expected_sev_all
+
+inflation_vec <- rep(0.025, 10)
+interest_vec  <- rep(0.018, 10)
+
+loading <- 0.20
+phi_sev <- sigma(model_sev)
+
+n_sim <- 100000
+sim_list_10yr <- vector("list", n_sim)
+
+for (sim in seq_len(n_sim)) {
+  sim_list_10yr[[sim]] <- simulate_10yr_nb_wc(
+    nb_data_all = nb_entrants,
+    freq_pred_all = freq_pred_all,
+    expected_loss_by_worker_all = expected_loss_by_worker_all,
+    model_sev = model_sev,
+    df_sev = df_sev,
+    injury_prob_table = injury_prob_table,
+    injury_prob_table_all = injury_prob_table_all,
+    phi_sev = phi_sev,
+    loading = loading,
+    inflation_vec = inflation_vec,
+    interest_vec = interest_vec
+  )
+
+  message("Completed 10-year simulation iteration: ", sim, " / ", n_sim)
+}
+
+sim_results_10yr <- bind_rows(sim_list_10yr)
+
+# saveRDS(sim_results_10yr, file = paste0(getwd(), "/sim_results_10yr.rds"))
+# sim_results_10yr <- readRDS(paste0(getwd(), '/sim_results_10yr.rds'))
+
+
+summary(sim_results_10yr)
+
+mean(sim_results_10yr$pv_aggregate_loss)
+sd(sim_results_10yr$pv_aggregate_loss)
+quantile(sim_results_10yr$pv_aggregate_loss, c(0.5, 0.9, 0.95, 0.99, 0.995))
+
+mean(sim_results_10yr$pv_aggregate_profit)
+sd(sim_results_10yr$pv_aggregate_profit)
+quantile(sim_results_10yr$pv_aggregate_profit, c(0.005, 0.01, 0.05, 0.1, 0.5))
+
+mean(sim_results_10yr$pv_aggregate_profit < 0)
+
+hist(
+  sim_results_10yr$pv_aggregate_loss,
+  breaks = 40,
+  main = "PV Aggregate Loss Distribution (10-Year WC NB Portfolio)",
+  xlab = "PV Aggregate Loss"
+)
+
+hist(
+  sim_results_10yr$pv_aggregate_profit,
+  breaks = 40,
+  main = "PV Aggregate Profit Distribution (10-Year WC NB Portfolio)",
+  xlab = "PV Aggregate Profit"
+)
+```
