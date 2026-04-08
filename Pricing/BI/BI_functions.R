@@ -1,32 +1,35 @@
-library(dplyr)
-library(tidyr)
-library(purrr)
+# =========================================================
+# BI NEW BUSINESS SIMULATION FUNCTIONS
+# =========================================================
 
 # =========================================================
-# Function: make_nb_data_bi
-#
-# Purpose:
-# Create policy-level new business data for 10 years by sampling
-# from historical df_freq according to entry counts by year/system.
-#
-# Mapping:
-# Helionis -> Helionis Cluster
-# Bayesia   -> Epsilon
-# Oryn      -> Zeta
+# 1. LIBRARIES
 # =========================================================
 library(dplyr)
 library(tidyr)
 library(purrr)
 library(tibble)
 
+# =========================================================
+# 2. FUNCTION: CREATE NB DATA (SEPARATED BY YEAR)
+# =========================================================
+# Purpose:
+# Generate synthetic new business (NB) policy-level dataset.
+# For each year and system, sample policy characteristics from
+# historical frequency data (df_freq) based on entry volumes.
+# Output is a combined dataset of all simulated NB policies
+# with assigned "added_year" for cohort tracking.
+
 make_nb_data_bi_sep <- function(df_freq, nb_entry_table) {
   
+  # Mapping between raw system names and model systems
   system_map <- c(
     "Helionis Cluster" = "Helionis Cluster",
     "Bayesia System"   = "Epsilon",
-    "Oryn Delta"      = "Zeta"
+    "Oryn Delta"       = "Zeta"
   )
   
+  # Convert entry table to long format
   nb_long <- nb_entry_table %>%
     rownames_to_column("system_raw") %>%
     pivot_longer(
@@ -40,6 +43,7 @@ make_nb_data_bi_sep <- function(df_freq, nb_entry_table) {
     ) %>%
     dplyr::select(system_raw, solar_system, added_year, n_new)
   
+  # Sample policies for each year/system
   sampled_list <- map(seq_len(nrow(nb_long)), function(i) {
     
     row_i <- nb_long[i, ]
@@ -54,23 +58,31 @@ make_nb_data_bi_sep <- function(df_freq, nb_entry_table) {
       stop(paste("No rows found in df_freq for solar_system =", row_i$solar_system))
     }
     
+    # Independent sampling of covariates
     tibble(
-      solar_system         = row_i$solar_system,
-      system_raw           = row_i$system_raw,
-      added_year           = row_i$added_year,
-      supply_chain_index   = sample(pool$supply_chain_index,   n_i, replace = TRUE),
-      avg_crew_exp         = sample(pool$avg_crew_exp,         n_i, replace = TRUE),
-      maintenance          = sample(pool$maintenance,          n_i, replace = TRUE),
-      production_load      = sample(pool$production_load,      n_i, replace = TRUE),
-      energy_backup_score  = sample(pool$energy_backup_score,  n_i, replace = TRUE),
-      safety_compliance    = sample(pool$safety_compliance,    n_i, replace = TRUE),
-      exposure             = 1,
-      claim_count          = 0
+      solar_system        = row_i$solar_system,
+      system_raw          = row_i$system_raw,
+      added_year          = row_i$added_year,
+      supply_chain_index  = sample(pool$supply_chain_index,  n_i, replace = TRUE),
+      avg_crew_exp        = sample(pool$avg_crew_exp,        n_i, replace = TRUE),
+      maintenance         = sample(pool$maintenance,         n_i, replace = TRUE),
+      production_load     = sample(pool$production_load,     n_i, replace = TRUE),
+      energy_backup_score = sample(pool$energy_backup_score, n_i, replace = TRUE),
+      safety_compliance   = sample(pool$safety_compliance,   n_i, replace = TRUE),
+      exposure            = 1,
+      claim_count         = 0
     )
   })
   
   bind_rows(sampled_list)
 }
+
+# =========================================================
+# 3. NB ENTRY TABLE (INPUT ASSUMPTION)
+# =========================================================
+# Purpose:
+# Define number of new policies entering each system per year.
+# This acts as the business plan / growth assumption.
 
 nb_entry_table <- data.frame(
   row.names = c("Helionis Cluster", "Bayesia System", "Oryn Delta"),
@@ -86,11 +98,17 @@ nb_entry_table <- data.frame(
   Yr10 = c(1,  0,  0)
 )
 
-library(dplyr)
+# =========================================================
+# 4. FUNCTION: ONE-YEAR SIMULATION
+# =========================================================
+# Purpose:
+# Simulate one-year aggregate outcomes for a NB portfolio.
+# Uses:
+# - Negative Binomial for claim frequency
+# - Lognormal for claim severity
+# Outputs:
+# - Aggregate loss, profit, loss ratio, claim counts
 
-# =========================================================
-# One-year NB BI simulation
-# =========================================================
 simulate_one_nb_bi <- function(nb_data_base,
                                freq_pred_base,
                                nb_size,
@@ -99,25 +117,27 @@ simulate_one_nb_bi <- function(nb_data_base,
                                aggregate_expected_loss_base,
                                aggregate_earnings_base) {
   
+  # Simulate claim counts
   claim_counts <- rnbinom(
     n = length(freq_pred_base),
     size = nb_size,
-    mu = freq_pred_base
+    mu   = freq_pred_base
   )
   
-  total_claims <- sum(claim_counts, na.rm = TRUE)
+  total_claims   <- sum(claim_counts, na.rm = TRUE)
   aggregate_loss <- 0
   
+  # Simulate claim severity if claims exist
   if (total_claims > 0) {
     claim_sizes <- rlnorm(
       n = total_claims,
       meanlog = mu,
       sdlog   = sigma
     )
-    
     aggregate_loss <- sum(claim_sizes, na.rm = TRUE)
   }
   
+  # Calculate profit and loss ratio
   profit <- aggregate_earnings_base - aggregate_loss
   loss_ratio <- ifelse(
     aggregate_earnings_base > 0,
@@ -137,8 +157,18 @@ simulate_one_nb_bi <- function(nb_data_base,
 }
 
 # =========================================================
-# Multi-year NB BI simulation
+# 5. FUNCTION: MULTI-YEAR SIMULATION
 # =========================================================
+# Purpose:
+# Simulate portfolio performance over multiple years.
+# Incorporates:
+# - Cohort growth (added_year)
+# - Inflation (premium & claims)
+# - Discounting (interest rates)
+# Outputs:
+# - Year-by-year results
+# - Present value (PV) aggregate metrics
+
 simulate_nyr_nb_bi <- function(nb_data_all,
                                freq_pred_all,
                                nb_size,
@@ -160,64 +190,69 @@ simulate_nyr_nb_bi <- function(nb_data_all,
   
   for (t in seq_len(n_years)) {
     
+    # Select active policies (cumulative cohort)
     idx_t <- which(nb_data_all$added_year <= t)
     nb_data_t <- nb_data_all[idx_t, , drop = FALSE]
+    
     freq_pred_t <- freq_pred_all[idx_t]
     expected_loss_t_by_policy <- expected_loss_by_policy_all[idx_t]
     
+    # Base expected values
     aggregate_expected_loss_base_t <- sum(expected_loss_t_by_policy, na.rm = TRUE)
     aggregate_earnings_base_t <- aggregate_expected_loss_base_t * (1 + loading)
     
-    if (t == 1) {
-      premium_inflation_factor_t <- 1
-    } else {
-      premium_inflation_factor_t <- prod(1 + inflation_vec[1:(t - 1)])
-    }
+    # Inflation factors
+    premium_inflation_factor_t <-
+      if (t == 1) 1 else prod(1 + inflation_vec[1:(t - 1)])
     
-    if (t == 1) {
-      claim_inflation_factor_t <- exp(0.5 * inflation_vec[t])
-    } else {
-      claim_inflation_factor_t <- prod(1 + inflation_vec[1:(t - 1)]) * exp(0.5 * inflation_vec[t])
-    }
+    claim_inflation_factor_t <-
+      if (t == 1) {
+        exp(0.5 * inflation_vec[t])
+      } else {
+        prod(1 + inflation_vec[1:(t - 1)]) * exp(0.5 * inflation_vec[t])
+      }
     
+    # Discount factors
     if (t == 1) {
       df_premium_t <- 1
       df_claim_t   <- 1
-      # df_claim_t   <- 1 / ((1 + interest_vec[t])^0.5)
     } else {
       df_premium_t <- 1 / prod(1 + interest_vec[1:(t - 1)])
-      df_claim_t <- 1 / prod(1 + interest_vec[1:(t - 1)])
-      # df_claim_t   <- df_premium_t / ((1 + interest_vec[t])^0.5)
+      df_claim_t   <- df_premium_t
     }
     
+    # Apply inflation
     aggregate_expected_loss_t <- aggregate_expected_loss_base_t * claim_inflation_factor_t
     aggregate_earnings_t      <- aggregate_earnings_base_t * premium_inflation_factor_t
     
+    # Simulate frequency
     claim_counts_t <- rnbinom(
       n = length(freq_pred_t),
       size = nb_size,
-      mu = freq_pred_t
+      mu   = freq_pred_t
     )
     
-    total_claims_t <- sum(claim_counts_t, na.rm = TRUE)
+    total_claims_t   <- sum(claim_counts_t, na.rm = TRUE)
     aggregate_loss_t <- 0
     
+    # Simulate severity
     if (total_claims_t > 0) {
       claim_sizes_t <- rlnorm(
         n = total_claims_t,
         meanlog = mu + log(claim_inflation_factor_t),
         sdlog   = sigma
       )
-      
       aggregate_loss_t <- sum(claim_sizes_t, na.rm = TRUE)
     }
     
     profit_t <- aggregate_earnings_t - aggregate_loss_t
     
+    # Discounted values
     pv_loss_t    <- aggregate_loss_t * df_claim_t
     pv_premium_t <- aggregate_earnings_t * df_premium_t
     pv_profit_t  <- pv_premium_t - pv_loss_t
     
+    # Accumulate PV
     pv_aggregate_loss   <- pv_aggregate_loss + pv_loss_t
     pv_aggregate_prem   <- pv_aggregate_prem + pv_premium_t
     pv_aggregate_profit <- pv_aggregate_profit + pv_profit_t
@@ -232,11 +267,7 @@ simulate_nyr_nb_bi <- function(nb_data_all,
       profit = profit_t,
       pv_loss = pv_loss_t,
       pv_premium = pv_premium_t,
-      pv_profit = pv_profit_t,
-      claim_inflation_factor = claim_inflation_factor_t,
-      premium_inflation_factor = premium_inflation_factor_t,
-      df_claim = df_claim_t,
-      df_premium = df_premium_t
+      pv_profit = pv_profit_t
     )
   }
   
@@ -246,17 +277,25 @@ simulate_nyr_nb_bi <- function(nb_data_all,
     summary = data.frame(
       pv_aggregate_loss = pv_aggregate_loss,
       pv_aggregate_premium = pv_aggregate_prem,
-      pv_aggregate_profit = pv_aggregate_profit,
-      undiscounted_aggregate_loss = sum(yearly_results_df$aggregate_loss, na.rm = TRUE),
-      undiscounted_aggregate_profit = sum(yearly_results_df$profit, na.rm = TRUE)
+      pv_aggregate_profit = pv_aggregate_profit
     ),
     yearly = yearly_results_df
   )
 }
 
 # =========================================================
-# Wrapper function
+# 6. WRAPPER FUNCTION
 # =========================================================
+# Purpose:
+# Main simulation engine.
+# Handles both:
+# - One-year simulation
+# - Multi-year simulation
+# Automates:
+# - Frequency prediction
+# - Expected loss calculation
+# - Running multiple simulation iterations (Monte Carlo)
+
 run_nb_bi_simulation <- function(nb_data_bi,
                                  model_freq,
                                  mu,
@@ -274,11 +313,7 @@ run_nb_bi_simulation <- function(nb_data_bi,
     nb_data_base <- nb_data_bi %>%
       dplyr::filter(added_year == 1)
     
-    freq_pred_base <- predict(
-      model_freq,
-      newdata = nb_data_base,
-      type = "response"
-    )
+    freq_pred_base <- predict(model_freq, newdata = nb_data_base, type = "response")
     
     expected_sev <- exp(mu + 0.5 * sigma^2)
     expected_loss_by_policy_base <- freq_pred_base * expected_sev
@@ -290,13 +325,13 @@ run_nb_bi_simulation <- function(nb_data_bi,
     
     for (sim in seq_len(n_sim)) {
       sim_list[[sim]] <- simulate_one_nb_bi(
-        nb_data_base = nb_data_base,
-        freq_pred_base = freq_pred_base,
-        nb_size = nb_size,
-        mu = mu,
-        sigma = sigma,
-        aggregate_expected_loss_base = aggregate_expected_loss_base,
-        aggregate_earnings_base = aggregate_earnings_base
+        nb_data_base,
+        freq_pred_base,
+        nb_size,
+        mu,
+        sigma,
+        aggregate_expected_loss_base,
+        aggregate_earnings_base
       )
     }
     
@@ -306,11 +341,7 @@ run_nb_bi_simulation <- function(nb_data_bi,
     
     nb_data_all <- nb_data_bi
     
-    freq_pred_all <- predict(
-      model_freq,
-      newdata = nb_data_all,
-      type = "response"
-    )
+    freq_pred_all <- predict(model_freq, newdata = nb_data_all, type = "response")
     
     expected_sev <- exp(mu + 0.5 * sigma^2)
     expected_loss_by_policy_all <- freq_pred_all * expected_sev
@@ -319,15 +350,15 @@ run_nb_bi_simulation <- function(nb_data_bi,
     
     for (sim in seq_len(n_sim)) {
       sim_out <- simulate_nyr_nb_bi(
-        nb_data_all = nb_data_all,
-        freq_pred_all = freq_pred_all,
-        nb_size = nb_size,
-        mu = mu,
-        sigma = sigma,
-        expected_loss_by_policy_all = expected_loss_by_policy_all,
-        loading = loading,
-        inflation_vec = inflation_vec,
-        interest_vec = interest_vec
+        nb_data_all,
+        freq_pred_all,
+        nb_size,
+        mu,
+        sigma,
+        expected_loss_by_policy_all,
+        loading,
+        inflation_vec,
+        interest_vec
       )
       
       sim_list[[sim]] <- sim_out$summary

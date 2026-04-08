@@ -49,8 +49,6 @@ df_freq <- na.omit(df_freq)
 
 ## Poisson GLM Modelling
 ```{r GLM freq}
-# Poisson GLM with lowest AIC was selected (for all candidate see BI_freq_GLM.R)
-
 model_freq <-glm.nb(
   claim_count ~
     supply_chain_index +
@@ -89,8 +87,6 @@ df_sev <- na.omit(df_sev)
 
 ## Gamma GLM Modelling
 ```{r GLM sev}
-# Gamma GLM with lowest AIC was selected (for all candidate see WC_sev_GLM.R)
-
 m <- lm(log(claim_amount) ~ 1, data = df_sev)
 
 mu    <- coef(m)[1]

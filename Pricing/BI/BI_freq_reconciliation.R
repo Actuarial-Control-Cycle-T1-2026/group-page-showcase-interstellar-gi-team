@@ -41,7 +41,6 @@ data_check <- function(df, ignore_cols = c("policy_id", "worker_id")) {
 # Run check
 res <- data_check(bi_freq_model_clean)
 
-# 🔥 IMPORTANT: explicitly print
 cat("\n================ NUMERIC SUMMARY ================\n")
 print(res$numeric_summary)
 
