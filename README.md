@@ -25,16 +25,16 @@ Download the input Excel files from **SOA_2026_Case_Study_Materials** and place 
 
 ## Step 2: Raw to Intermediate Data
 
-In: 00_DataPrep/Scripts 
-run: Raw_to_Intermediate.R
-This script converts raw data into intermediate datasets used in later stages.
+In: `00_DataPrep/Scripts` 
+run: `Raw_to_Intermediate.R`
+- This script converts raw data into intermediate datasets used in later stages.
 
 ---
 
 ## Step 3: Intermediate Processing
 
-Still in: 00_DataPrep/Scripts
-run the remaining **four R / Rmd scripts**, which further process the intermediate data for pricing and capital modelling.
+Still in: `00_DataPrep/Scripts`
+- run the remaining **four R / Rmd scripts**, which further process the intermediate data for pricing and capital modelling.
 
 ---
 
@@ -48,27 +48,27 @@ The order of subfolders (BI, Cargo, EQF, WC) does not matter.
 
 Download the following scripts in the BI folder:
 
-- BI_freq_reconciliation.R  
-- BI_functions.R  
-- BI_sev_reconciliation.R  
+- `BI_freq_reconciliation.R`
+- `BI_functions.R`  
+- `BI_sev_reconciliation.R`  
 
-Then run: BusinessInterruption.Rmd
+Then run: `BusinessInterruption.Rmd`
 
 ---
 
 ## Cargo
 
-Run: Cargo.Rmd
+Run: `Cargo.Rmd`
 
-All required functions are already included in the script.
+- All required functions are already included in the script.
 
 ---
 
 ## Equipment Failure (EQF)
 
-Run: EquipmentFailure.Rmd
+Run: `EquipmentFailure.Rmd`
 
-All required functions are self-contained.
+- All required functions are self-contained.
 
 ---
 
@@ -76,16 +76,14 @@ All required functions are self-contained.
 
 Download the following scripts in the WC folder:
 
-- WC_NB_data_generator.R  
-- WC_NB_data_generator_all.R  
-- WC_NB_mapping_table.R  
-- WC_freq_reconciliation.R  
-- WC_functions.R  
-- WC_sev_reconciliation.R  
+- `WC_NB_data_generator.R`  
+- `WC_NB_data_generator_all.R`  
+- `WC_NB_mapping_table.R`  
+- `WC_freq_reconciliation.R`  
+- `WC_functions.R`  
+- `WC_sev_reconciliation.R`  
 
-Then run:
-
-WorkersComp.Rmd
+Then run: `WorkersComp.Rmd`
 
 ---
 
@@ -95,16 +93,16 @@ WorkersComp.Rmd
 
 Ensure aggregate loss files generated in Folder 2 follow this naming convention:
 
-- BI_base_agg_loss.rds  
-- Cargo_base_agg_loss.rds  
-- EF_base_agg_loss.rds  
-- WC_base_agg_loss.rds  
+- `BI_base_agg_loss.rds` 
+- `Cargo_base_agg_loss.rds`  
+- `EF_base_agg_loss.rds`  
+- `WC_base_agg_loss.rds`  
 
 ---
 
 ## Step 2: Run Capital Model
 
-Run: Copula.R
+Run: `Copula.R`
 
 This script:
 - reads aggregate loss files
