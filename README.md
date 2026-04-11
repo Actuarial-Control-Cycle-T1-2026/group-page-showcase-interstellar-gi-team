@@ -97,7 +97,6 @@ Ensure aggregate loss files generated in Folder 2 follow this naming convention:
 - `EF_base_agg_loss.rds`  
 - `WC_base_agg_loss.rds`  
 
----
 
 ## Step 2: Run Capital Model
 
