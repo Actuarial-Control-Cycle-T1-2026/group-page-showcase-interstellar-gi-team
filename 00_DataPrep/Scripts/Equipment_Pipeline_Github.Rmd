@@ -1,0 +1,419 @@
+---
+title: "Cargo Claim EDA"
+output: html_document
+date: "2026-03-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+# 0. Import Packages
+getwd()
+bronze_path <- paste0(getwd(), '/Bronze/') 
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+```
+
+```{r EQF Basic Joining}
+
+# Stage 1: Load Raw Data
+ef_freq_raw <- read_csv(paste0(bronze_path, "eqf_claim_freq.csv"))
+ef_sev_raw  <- read_csv(paste0(bronze_path, "eqf_claim_sev.csv"))
+
+ef_claim_freq <- ef_freq_raw
+ef_claim_sev  <- ef_sev_raw
+
+# Stage 2: policy_id & equipment_id formatting 
+# Same logic as Cargo Loss — strip everything after first underscore.
+ef_claim_freq <- ef_claim_freq %>% mutate(policy_id    = sub("_.*", "", policy_id),equipment_id = sub("_.*", "", equipment_id))
+ef_claim_sev <- ef_claim_sev %>% mutate(policy_id    = sub("_.*", "", policy_id),equipment_id = sub("_.*", "", equipment_id))
+
+#### Check: equipment_id linked to multiple policy_ids in freq - 4227 
+multi_policy_equipment <- ef_claim_freq %>%
+        filter(!is.na(equipment_id), !is.na(policy_id)) %>%
+        group_by(equipment_id) %>%
+        summarise(n_policies = n_distinct(policy_id), .groups = "drop") %>%
+        filter(n_policies > 1)
+nrow(multi_policy_equipment) #4227 shipmentid have more than 1 policyid in freq table
+
+#### Check: missing policy_id in sev
+sev_na_equipment <- ef_claim_sev %>%
+      filter(is.na(policy_id), !is.na(equipment_id)) %>%
+      distinct(equipment_id)
+row(sev_na_equipment) # 22 equipid has missing policyid
+
+#### Check: NA claim_count in freq - 175 NA claimcount
+View(ef_claim_freq %>% filter(is.na(claim_count)))
+
+# Stage 3: Fill missing IDs 
+# 1) Build equipment_id → policy_id map from freq (used to fill missing policy_id in sev)
+equipment_policy_map <- ef_claim_freq %>%
+  filter(!is.na(equipment_id), !is.na(policy_id)) %>%
+  group_by(equipment_id, policy_id) %>%
+  summarise(
+    claim_count = sum(claim_count, na.rm = TRUE),
+    .groups = "drop") %>%
+  group_by(equipment_id) %>%
+  mutate(n_policies = n_distinct(policy_id),has_claim  = claim_count > 0) %>%
+  arrange(equipment_id, desc(has_claim), desc(claim_count), policy_id) %>%
+  summarise(
+    policy_id_fill = first(policy_id),
+    n_policies     = first(n_policies),
+    .groups = "drop")
+
+# 1.1) Fill missing policy_id in sev using map
+ef_claim_sev <- ef_claim_sev %>%
+  left_join(equipment_policy_map, by = "equipment_id") %>%
+  mutate(
+    policy_id = if_else(is.na(policy_id), policy_id_fill, policy_id)
+  ) %>%
+  dplyr::select(-policy_id_fill, -n_policies)
+
+# 2) Build policy_id → equipment_id map from freq
+# (used to fill missing equipment_id in sev)
+policy_equipment_map <- ef_claim_freq %>%
+  filter(!is.na(policy_id), !is.na(equipment_id)) %>%
+  group_by(policy_id, equipment_id) %>%
+  summarise(
+    claim_count = sum(claim_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(policy_id) %>%
+  arrange(policy_id, desc(claim_count), equipment_id) %>%
+  summarise(
+    equipment_id_fill = first(equipment_id),
+    n_equipment       = n_distinct(equipment_id),
+    .groups = "drop")
+
+# 2.1) Fill missing equipment_id in sev
+ef_claim_sev <- ef_claim_sev %>%
+  left_join(policy_equipment_map, by = "policy_id") %>%
+  mutate(
+    equipment_id = if_else(is.na(equipment_id), equipment_id_fill, equipment_id)
+  ) %>%
+  dplyr::select(-equipment_id_fill, -n_equipment)
+
+# Sense check sev
+cat("Sev remaining NA policy_id:",    sum(is.na(ef_claim_sev$policy_id)),    "\n")
+cat("Sev remaining NA equipment_id:", sum(is.na(ef_claim_sev$equipment_id)), "\n")
+cat("Sev row count:", nrow(ef_claim_sev), "\n")
+
+# 3) Fill missing equipment_id in freq using freq's own map
+ef_claim_freq <- ef_claim_freq %>%
+  left_join(policy_equipment_map, by = "policy_id") %>%
+  mutate(
+    equipment_id = if_else(is.na(equipment_id), equipment_id_fill, equipment_id)
+  ) %>%
+  dplyr::select(-equipment_id_fill, -n_equipment)
+
+# 3.1) Build sev-based map as backup for freq
+sev_policy_equipment_map <- ef_claim_sev %>%
+  filter(!is.na(policy_id), !is.na(equipment_id)) %>%
+  group_by(policy_id, equipment_id) %>%
+  summarise(
+    claim_amount = sum(claim_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(policy_id) %>%
+  arrange(policy_id, desc(claim_amount), equipment_id) %>%
+  summarise(
+    equipment_id_fill = first(equipment_id),
+    n_equipment       = n_distinct(equipment_id),
+    .groups = "drop"
+  )
+
+# 3.2) Fill any remaining missing equipment_id in freq using sev map
+ef_claim_freq <- ef_claim_freq %>%
+  left_join(sev_policy_equipment_map, by = "policy_id") %>%
+  mutate(
+    equipment_id = if_else(is.na(equipment_id), equipment_id_fill, equipment_id)
+  ) %>%
+  dplyr::select(-equipment_id_fill, -n_equipment)
+
+# 4) Fill missing policy_id in freq using equipment map from sev
+sev_equipment_policy_map <- ef_claim_sev %>%
+  filter(!is.na(policy_id), !is.na(equipment_id)) %>%
+  group_by(equipment_id, policy_id) %>%
+  summarise(
+    claim_amount = sum(claim_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(equipment_id) %>%
+  arrange(equipment_id, desc(claim_amount), policy_id) %>%
+  summarise(
+    policy_id_fill = first(policy_id),
+    n_policies     = n_distinct(policy_id),
+    .groups = "drop"
+  )
+
+# 4.1) Fill missing policy_id in freq using freq's own map
+ef_claim_freq <- ef_claim_freq %>%
+  left_join(equipment_policy_map, by = "equipment_id") %>%
+  mutate(
+    policy_id = if_else(is.na(policy_id), policy_id_fill, policy_id)
+  ) %>%
+  dplyr::select(-policy_id_fill, -n_policies)
+
+# 4.2) Fill remaining missing policy_id in freq using sev map
+ef_claim_freq <- ef_claim_freq %>%
+  left_join(sev_equipment_policy_map, by = "equipment_id") %>%
+  mutate(
+    policy_id = if_else(is.na(policy_id), policy_id_fill, policy_id)
+  ) %>%
+  dplyr::select(-policy_id_fill, -n_policies)
+
+# Final sense check on freq
+cat("Freq remaining NA policy_id:",    sum(is.na(ef_claim_freq$policy_id)),    "\n")
+cat("Freq remaining NA equipment_id:", sum(is.na(ef_claim_freq$equipment_id)), "\n")
+cat("Freq row count:", nrow(ef_claim_freq), "\n")
+
+# Check what's causing remaining NAs (should be claim_count = 0 or NA)
+ef_claim_freq %>% filter(is.na(policy_id))    %>% count(claim_count)
+ef_claim_freq %>% filter(is.na(equipment_id)) %>% count(claim_count)
+
+# Two frequency records with valid claims (claim_count = 1) could not be matched to an equipment_id. 
+# Investigation of the raw severity table confirmed the equipment_id was absent at source for these policies, indicating a data collection gap rather than a pipeline error. These records are retained in the frequency table but excluded from any equipment-level join analysis.
+
+# Check what's causing remaining NAs (should be claim_amount = 0 or NA)
+ef_claim_sev %>% filter(is.na(policy_id))    %>% count(claim_amount)
+ef_claim_sev %>% filter(is.na(equipment_id)) %>% count(claim_amount)
+
+# Note on unresolved IDs:
+# EF-548692: equipment_id missing at source in both freq and sev — linked via policy_id
+# EQ-643546: orphaned sev record with no matching freq entry — retained in sev but cannot be linked to freq. Flagged as data limitation.
+
+# Stage 4: Check missing values across all columns 
+# Save ID-clean checkpoints
+freq_clean_id <- ef_claim_freq
+sev_clean_id  <- ef_claim_sev
+
+# ef_claim_freq <- freq_clean_id
+# ef_claim_sev  <- sev_clean_id
+
+freq_missing <- ef_claim_freq %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "missing") %>%
+  mutate(pct = round(missing / nrow(ef_claim_freq) * 100, 2)) %>%
+  arrange(desc(missing))
+print(freq_missing)
+
+sev_missing <- ef_claim_sev %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "missing") %>%
+  mutate(pct = round(missing / nrow(ef_claim_sev) * 100, 2)) %>%
+  arrange(desc(missing))
+print(sev_missing)
+
+# Stage 5: Cross-table fill for numeric/categorical columns 
+# Build sev lookup keyed on policy_id + equipment_id
+sev_lookup <- ef_claim_sev %>%
+  filter(!is.na(policy_id), !is.na(equipment_id)) %>%
+  mutate(n_complete = rowSums(!is.na(across(where(is.numeric))))) %>%
+  group_by(policy_id, equipment_id) %>%
+  arrange(desc(n_complete), .by_group = TRUE) %>%
+  summarise(
+    equipment_age_sev   = first(na.omit(equipment_age)),
+    maintenance_int_sev = first(na.omit(maintenance_int)),
+    usage_int_sev       = first(na.omit(usage_int)),
+    exposure_sev        = first(na.omit(exposure)),
+    solar_system_sev    = first(na.omit(solar_system)),
+    equipment_type_sev  = first(na.omit(equipment_type)),
+    .groups = "drop"
+  )
+
+# Apply sev lookup to freq
+ef_claim_freq <- ef_claim_freq %>%
+  left_join(sev_lookup, by = c("policy_id", "equipment_id")) %>%
+  mutate(
+    equipment_age   = if_else(is.na(equipment_age),   equipment_age_sev,   equipment_age),
+    maintenance_int = if_else(is.na(maintenance_int), maintenance_int_sev, maintenance_int),
+    usage_int       = if_else(is.na(usage_int),       usage_int_sev,       usage_int),
+    exposure        = if_else(is.na(exposure),        exposure_sev,        exposure),
+    solar_system    = if_else(is.na(solar_system),    solar_system_sev,    solar_system),
+    equipment_type  = if_else(is.na(equipment_type),  equipment_type_sev,  equipment_type)
+  ) %>%
+  dplyr::select(-ends_with("_sev"))
+
+# Build freq lookup keyed on policy_id + equipment_id
+freq_lookup <- ef_claim_freq %>%
+  filter(!is.na(policy_id), !is.na(equipment_id)) %>%
+  mutate(n_complete = rowSums(!is.na(across(where(is.numeric))))) %>%
+  group_by(policy_id, equipment_id) %>%
+  arrange(desc(n_complete), .by_group = TRUE) %>%
+  summarise(
+    equipment_age_freq   = first(na.omit(equipment_age)),
+    maintenance_int_freq = first(na.omit(maintenance_int)),
+    usage_int_freq       = first(na.omit(usage_int)),
+    exposure_freq        = first(na.omit(exposure)),
+    solar_system_freq    = first(na.omit(solar_system)),
+    equipment_type_freq  = first(na.omit(equipment_type)),
+    .groups = "drop"
+  )
+
+# Apply freq lookup to sev
+ef_claim_sev <- ef_claim_sev %>%
+  left_join(freq_lookup, by = c("policy_id", "equipment_id")) %>%
+  mutate(
+    equipment_age   = if_else(is.na(equipment_age),   equipment_age_freq,   equipment_age),
+    maintenance_int = if_else(is.na(maintenance_int), maintenance_int_freq, maintenance_int),
+    usage_int       = if_else(is.na(usage_int),       usage_int_freq,       usage_int),
+    exposure        = if_else(is.na(exposure),        exposure_freq,        exposure),
+    solar_system    = if_else(is.na(solar_system),    solar_system_freq,    solar_system),
+    equipment_type  = if_else(is.na(equipment_type),  equipment_type_freq,  equipment_type)
+  ) %>%
+  dplyr::select(-ends_with("_freq"))
+
+# Verify after cross-fill
+ef_claim_freq %>% summarise(across(everything(), ~ sum(is.na(.x)))) %>% glimpse()
+ef_claim_sev  %>% summarise(across(everything(), ~ sum(is.na(.x)))) %>% glimpse()
+
+ef_claim_freq %>%
+  filter(is.na(policy_id) | is.na(equipment_id)) %>%
+  summarise(across(everything(), ~ sum(is.na(.x))))
+
+# Distribution of claim_amount by equipment_type BEFORE filtering
+ef_claim_sev %>%
+  filter(!is.na(claim_amount), claim_amount > 0) %>%
+  group_by(equipment_type) %>%
+  summarise(
+    n           = n(),
+    min         = min(claim_amount),
+    max         = max(claim_amount),
+    mean        = round(mean(claim_amount), 0),
+    median      = round(median(claim_amount), 0),
+    n_above_790k = sum(claim_amount > 790000)
+  ) %>%
+  arrange(desc(median))
+  print(n = Inf, width = Inf)
+  
+  # Final decision:   
+  # Claims slightly below the approximate lower bound of ~11K were retained as the dictionary uses approximate bounds and these records appear legitimate. - only 18rows
+  # 12 claims exceeding the dictionary upper bound of 790K were removed --> this could affect the suminsured claim. 
+  # These were concentrated in Quantum Bore (5), Mag-Lift Aggregator (3), and Ion Pulverizer (2), suggesting higher-severity equipment types exist but are treated as out-of-range data. - 12 rows
+
+# Stage 6: Remove invalid claim_amount rows from sev 
+ef_claim_sev <- ef_claim_sev %>%
+  filter(
+    !is.na(claim_amount),
+    claim_amount > 0,
+    claim_amount <= 790000)
+nrow(ef_claim_sev) # 8272 - 16NA - 11NEGATIVE - 12EXCEED = 8233
+
+# Save checkpoints
+freq_clean_range <- ef_claim_freq
+sev_clean_range  <- ef_claim_sev
+
+
+# Stage 7: Set out-of-range values to NA 
+ef_claim_freq <- ef_claim_freq %>%
+  mutate(
+    claim_count     = if_else(claim_count < 0 | claim_count > 3,              NA_real_, claim_count),
+    equipment_age   = if_else(equipment_age < 0 | equipment_age > 30,         NA_real_, equipment_age), #extended to close to NB data
+    maintenance_int = if_else(maintenance_int < 100 | maintenance_int > 5000, NA_real_, maintenance_int),
+    usage_int       = if_else(usage_int < 0 | usage_int > 24,                 NA_real_, usage_int),
+    exposure        = if_else(exposure < 0 | exposure > 1,                    NA_real_, exposure)
+  )
+
+ef_claim_sev <- ef_claim_sev %>%
+  mutate(
+    equipment_age   = if_else(equipment_age < 0 | equipment_age > 30,         NA_real_, equipment_age),
+    maintenance_int = if_else(maintenance_int < 100 | maintenance_int > 5000, NA_real_, maintenance_int),
+    usage_int       = if_else(usage_int < 0 | usage_int > 24,                 NA_real_, usage_int),
+    exposure        = if_else(exposure < 0 | exposure > 1,                    NA_real_, exposure)
+  )
+
+# Stage 8: Impute remaining NAs following Stage 7 
+get_mode <- function(x) {
+  x <- x[!is.na(x)]
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+ef_claim_freq <- ef_claim_freq %>%
+  mutate(
+    claim_count     = if_else(is.na(claim_count), 0, claim_count),
+    equipment_age   = if_else(is.na(equipment_age),   median(equipment_age,   na.rm = TRUE), equipment_age),
+    maintenance_int = if_else(is.na(maintenance_int), median(maintenance_int, na.rm = TRUE), maintenance_int),
+    usage_int       = if_else(is.na(usage_int),       median(usage_int,       na.rm = TRUE), usage_int),
+    exposure        = if_else(is.na(exposure),        median(exposure,        na.rm = TRUE), exposure),
+    solar_system    = if_else(is.na(solar_system),    get_mode(solar_system),   solar_system),
+    equipment_type  = if_else(is.na(equipment_type),  get_mode(equipment_type), equipment_type)
+  )
+
+ef_claim_sev <- ef_claim_sev %>%
+  mutate(
+    equipment_age   = if_else(is.na(equipment_age),   median(equipment_age,   na.rm = TRUE), equipment_age),
+    maintenance_int = if_else(is.na(maintenance_int), median(maintenance_int, na.rm = TRUE), maintenance_int),
+    usage_int       = if_else(is.na(usage_int),       median(usage_int,       na.rm = TRUE), usage_int),
+    exposure        = if_else(is.na(exposure),        median(exposure,        na.rm = TRUE), exposure),
+    solar_system    = if_else(is.na(solar_system),    get_mode(solar_system),   solar_system),
+    equipment_type  = if_else(is.na(equipment_type),  get_mode(equipment_type), equipment_type)
+  )
+
+# Stage 9: Fix dirty character columns 
+
+# Step 1 — Strip everything after first underscore for ALL character columns
+ef_claim_freq <- ef_claim_freq %>%
+  mutate(across(where(is.character), ~ sub("_.*", "", .x)))
+ef_claim_sev <- ef_claim_sev %>%
+  mutate(across(where(is.character), ~ sub("_.*", "", .x)))
+
+# Step 2 — Standardise equipment_type to the 6 dictionary values
+fix_equipment_type <- function(x) {
+  case_when(
+    grepl("ReglAggregators",     x, ignore.case = TRUE) ~ "ReglAggregators",
+    grepl("Ion Pulverizer", x, ignore.case = TRUE) ~ "Ion Pulverizer",
+    grepl("Graviton Extractor",      x, ignore.case = TRUE) ~ "Graviton Extractor",
+    grepl("Quantum Bore",     x, ignore.case = TRUE) ~ "Quantum Bore",
+    grepl("FexStram Carrier",       x, ignore.case = TRUE) ~ "FexStram Carrier",
+    grepl("Flux Rider",          x, ignore.case = TRUE) ~ "Flux Rider",
+    TRUE ~ x
+  )
+} 
+
+ef_claim_freq <- ef_claim_freq %>%
+  mutate(equipment_type = fix_equipment_type(equipment_type))
+ef_claim_sev <- ef_claim_sev %>%
+  mutate(equipment_type = fix_equipment_type(equipment_type))
+
+# Step 3 — Verify all 6 types present
+cat("Freq equipment_type values:\n"); print(sort(unique(ef_claim_freq$equipment_type)))
+cat("Sev  equipment_type values:\n"); print(sort(unique(ef_claim_sev$equipment_type)))
+
+# Stage 10: Final Verification 
+ef_claim_freq %>% summarise(across(everything(), ~ sum(is.na(.x)))) %>% glimpse()
+ef_claim_sev  %>% summarise(across(everything(), ~ sum(is.na(.x)))) %>% glimpse()
+
+cat("Freq row count:", nrow(ef_claim_freq), "\n")
+cat("Sev  row count:", nrow(ef_claim_sev),  "\n")
+
+cat("\n=== FREQ RANGE CHECKS ===\n")
+cat("claim_count:",     min(ef_claim_freq$claim_count),     "to", max(ef_claim_freq$claim_count),     "\n")
+cat("equipment_age:",   min(ef_claim_freq$equipment_age),   "to", max(ef_claim_freq$equipment_age),   "\n")
+cat("maintenance_int:", min(ef_claim_freq$maintenance_int), "to", max(ef_claim_freq$maintenance_int), "\n")
+cat("usage_int:",       min(ef_claim_freq$usage_int),       "to", max(ef_claim_freq$usage_int),       "\n")
+cat("exposure:",        min(ef_claim_freq$exposure),        "to", max(ef_claim_freq$exposure),        "\n")
+cat("solar_system:",    sort(unique(ef_claim_freq$solar_system)),   "\n")
+cat("equipment_type:",  sort(unique(ef_claim_freq$equipment_type)), "\n")
+
+cat("\n=== SEV RANGE CHECKS ===\n")
+cat("claim_amount:",    min(ef_claim_sev$claim_amount),    "to", max(ef_claim_sev$claim_amount),    "\n")
+cat("equipment_age:",   min(ef_claim_sev$equipment_age),   "to", max(ef_claim_sev$equipment_age),   "\n")
+cat("maintenance_int:", min(ef_claim_sev$maintenance_int), "to", max(ef_claim_sev$maintenance_int), "\n")
+cat("usage_int:",       min(ef_claim_sev$usage_int),       "to", max(ef_claim_sev$usage_int),       "\n")
+cat("exposure:",        min(ef_claim_sev$exposure),        "to", max(ef_claim_sev$exposure),        "\n")
+cat("solar_system:",    sort(unique(ef_claim_sev$solar_system)),   "\n")
+cat("equipment_type:",  sort(unique(ef_claim_sev$equipment_type)), "\n")
+
+# Stage 11: Export CSV
+options(scipen = 999)
+write.csv(ef_claim_freq, file.path(bronze_path, "ef_claim_freq_update.csv"), row.names = FALSE)
+write.csv(ef_claim_sev,  file.path(bronze_path, "ef_claim_sev_update.csv"),  row.names = FALSE)
+
+```
+
+

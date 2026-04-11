@@ -1,0 +1,650 @@
+---
+title: "Cargo Data Cleaning"
+output: html_document
+date: "2026-03-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+# 0. Import Packages
+library(dplyr)
+library(readr)
+library(stringr)
+```
+
+```{r location}
+getwd()
+list.files(paste0(getwd(), '/Bronze/'))
+```
+
+```{r Cargo Basic Joining}
+getwd()
+bronze_path <- paste0(getwd(), '/Bronze/')
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+
+# Stage 1: Load Raw Data
+cargo_freq_raw    <- read_csv(paste0(bronze_path,"cargo_claim_freq.csv"))
+cargo_sev_raw    <- read_csv(paste0(bronze_path,"cargo_claim_sev.csv"))
+
+cargo_claim_freq <- cargo_freq_raw
+cargo_claim_sev  <- cargo_sev_raw
+
+########################## Data mapping for join ###################################
+
+# Stage 2: Policy_id & shipment_id formatting for join
+cargo_claim_freq <- cargo_claim_freq %>% mutate( policy_id = sub("_.*", "", policy_id),  shipment_id = sub("_.*", "", shipment_id))
+cargo_claim_sev <- cargo_claim_sev %>% mutate( policy_id = sub("_.*", "", policy_id),  shipment_id = sub("_.*", "", shipment_id))
+
+#### Check if there is multiple policy_id with same shipment_id - shipment in freq that linked to multiple policies
+multi_policy_shipments <- cargo_claim_freq %>%
+  filter(!is.na(shipment_id), !is.na(policy_id)) %>%
+  group_by(shipment_id) %>%
+  summarise(
+    n_policies = n_distinct(policy_id),
+    .groups = "drop"
+  ) %>%
+  filter(n_policies > 1)
+
+#### Check shipment_id with blank policy_id - shipments in sev that have no policy_id
+sev_na_shipments <- cargo_claim_sev %>%
+  filter(is.na(policy_id), !is.na(shipment_id)) %>%
+  distinct(shipment_id)
+
+#### identify blank policy_id in sev that have multiple policyid in freq table - in this case multi match
+problem_shipments <- multi_policy_shipments %>%
+  semi_join(sev_na_shipments, by = "shipment_id")
+
+#### view NA claim count
+ View(cargo_claim_freq %>% filter(is.na(claim_count)))
+
+# Stage 3: mapping 
+# Fill up blank policy_id in sev table 
+# 1) Build a shipment_id -> policy_id "best match" map from frequency table
+shipment_policy_map <- cargo_claim_freq %>%
+  filter(!is.na(shipment_id), !is.na(policy_id)) %>%
+  group_by(shipment_id, policy_id) %>%
+  summarise(
+    claim_count = sum(claim_count, na.rm=TRUE),  # use sum because there are na input cause warning message 
+    .groups = "drop"
+  ) %>%
+  group_by(shipment_id) %>%
+  mutate(
+    n_policies = n_distinct(policy_id),
+    has_claim  = claim_count > 0
+  ) %>%
+  arrange(
+    shipment_id,
+    desc(has_claim),       # prefer claim_count > 0 when multiple policies
+    desc(claim_count),     # then highest claim_count
+    policy_id              # tie-breaker (stable)
+  ) %>%
+  summarise(
+    policy_id_fill = first(policy_id),  # winner after sorting rules
+    n_policies = first(n_policies),
+    .groups = "drop"
+  )
+
+# 1.1) Fill missing policy_id in severity table using the map
+cargo_claim_sev <- cargo_claim_sev %>%
+  left_join(shipment_policy_map, by = "shipment_id") %>%
+  mutate(
+    policy_id = if_else(is.na(policy_id), policy_id_fill, policy_id)
+  ) %>%
+   dplyr::select(-policy_id_fill, -n_policies) # remove helper column
+
+### check
+sum(is.na(cargo_claim_sev$shipment_id))
+cargo_claim_sev %>% filter(is.na(shipment_id)) %>% summarise(has_policy_id = sum(!is.na(policy_id)),no_policy_id = sum(is.na(policy_id)))
+
+
+# Fill up blank shipment_id in sev table 
+# 2) Build a policy_id > shipment_id "best match" map from frequency table - use for fill up shipmentid in sev table 
+policy_shipment_map <- cargo_claim_freq %>%
+  filter(!is.na(policy_id), !is.na(shipment_id)) %>%
+  group_by(policy_id, shipment_id) %>%
+  summarise(
+    claim_count = sum(claim_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(policy_id) %>%
+  arrange(
+    policy_id,
+    desc(claim_count),  # prefer highest claim count
+    shipment_id         # tie-breaker (stable)
+  ) %>%
+  summarise(
+    shipment_id_fill = first(shipment_id),  # winner after sorting
+    n_shipments = n_distinct(shipment_id),  # flag how many shipments
+    .groups = "drop"
+  )
+
+# 2.1) Fill missing shipment_id in severity table using the map 
+cargo_claim_sev <- cargo_claim_sev %>% #eg CL-027246 CL-886939
+  left_join(policy_shipment_map, by = "policy_id") %>%
+  mutate(
+    shipment_id = if_else(
+      is.na(shipment_id),
+      shipment_id_fill,
+      shipment_id
+    )
+  ) %>%
+  dplyr::select(-shipment_id_fill, -n_shipments)
+
+##### sense checking sev table
+any(is.na(cargo_claim_sev$policy_id)) #FALSE
+any(is.na(cargo_claim_sev$shipment_id)) #FALSE
+nrow(cargo_claim_sev) #30650
+
+##### Separate sev with no policy_id and no shipment_id (they are exclusive)
+any(is.na(cargo_claim_sev$policy_id)) #FALSE
+any(is.na(cargo_claim_sev$shipment_id)) #FALSE
+
+
+# Fill up blank shipment_id in freq table 
+# 3) Build a policy_id > shipment_id "best match" map from sev table
+sev_policy_shipment_map <- cargo_claim_sev %>%
+  filter(!is.na(policy_id), !is.na(shipment_id)) %>%
+  group_by(policy_id, shipment_id) %>%
+  summarise(
+    claim_amount = sum(claim_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(policy_id) %>%
+  arrange(policy_id, desc(claim_amount), shipment_id) %>%
+  summarise(
+    shipment_id_fill = first(shipment_id),
+    n_shipments = n_distinct(shipment_id),
+    .groups = "drop"
+  )
+
+# 3.1) Fill missing shipment_id using freq's own map
+cargo_claim_freq <- cargo_claim_freq %>%
+  left_join(policy_shipment_map, by = "policy_id") %>%
+  mutate(shipment_id = if_else(is.na(shipment_id), shipment_id_fill, shipment_id)) %>%
+  dplyr::select(-shipment_id_fill, -n_shipments)
+
+# 3.2) Those not found in own freq map, fill remaining missing shipment_id using sev map
+cargo_claim_freq <- cargo_claim_freq %>%
+  left_join(sev_policy_shipment_map, by = "policy_id") %>%
+  mutate(shipment_id = if_else(is.na(shipment_id), shipment_id_fill, shipment_id)) %>%
+  dplyr::select(-shipment_id_fill, -n_shipments)
+
+### Fill up blank policy_id in freq table 
+# 4) Build a shipment_id > policy_id "best match" map from sev table
+sev_shipment_policy_map <- cargo_claim_sev %>%
+  filter(!is.na(policy_id), !is.na(shipment_id)) %>%
+  group_by(shipment_id, policy_id) %>%
+  summarise(
+    claim_amount = sum(claim_amount, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(shipment_id) %>%
+  arrange(shipment_id, desc(claim_amount), policy_id) %>%
+  summarise(
+    policy_id_fill = first(policy_id),
+    n_policies = n_distinct(policy_id),
+    .groups = "drop"
+  )
+
+# 4.1) Fill missing shipment_id using freq's own map
+cargo_claim_freq <- cargo_claim_freq %>%
+  left_join(shipment_policy_map, by = "shipment_id") %>%
+  mutate(policy_id = if_else(is.na(policy_id), policy_id_fill, policy_id)) %>%
+  dplyr::select(-policy_id_fill, -n_policies)
+
+# 4.2) Those not found in own freq map, fill remaining missing policyid using sev map
+cargo_claim_freq <- cargo_claim_freq %>%
+  left_join(sev_shipment_policy_map, by = "shipment_id") %>%
+  mutate(
+    policy_id = if_else(is.na(policy_id), policy_id_fill, policy_id)
+  ) %>%
+  dplyr::select(-policy_id_fill, -n_policies)
+
+sum(is.na(cargo_claim_freq$shipment_id)) # 197
+sum(is.na(cargo_claim_freq$policy_id)) # 220
+nrow(cargo_claim_freq) # should still be 124982
+
+#### check what cause na in freq table 
+cargo_claim_freq %>% # claim_count =0 and na make up can't match
+  filter(is.na(policy_id)) %>%
+  count(claim_count)
+cargo_claim_freq %>%
+  filter(is.na(shipment_id)) %>% # claim_count =0 and na make up can't match
+  count(claim_count)
+
+# Sev table: fully mapped — all missing policy_id and shipment_id successfully filled using best-match maps from both freq and sev tables.
+# Freq table: Partially mapped — remaining missing values are acceptable because:
+# 219/220 missing policy_id rows have claim_count = 0
+# 195/197 missing shipment_id rows have claim_count = 0
+# Remaining NAs (1-2 rows each) have claim_count = NA
+# None of these rows have actual claims to link to the sev table, so they won't affect the analysis
+
+########################## Data cleaning for freq and sev ###################################
+
+# Save clean ID versions as checkpoints (create copy)
+freq_clean_id <- cargo_claim_freq
+sev_clean_id  <- cargo_claim_sev
+
+# Verify
+nrow(freq_clean_id) # 124,982
+nrow(sev_clean_id)  # 30,650
+
+# Stage 4: Fix the missing inputs for all columns 
+### check missing input in each columns - all less than 0.25%
+cargo_claim_freq %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  glimpse()
+cargo_claim_sev %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  glimpse()
+
+# install.packages("tidyr")
+library(tidyr)
+
+# Freq table missing value summary
+freq_missing <- cargo_claim_freq %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "missing") %>%
+  mutate(pct = round(missing / nrow(cargo_claim_freq) * 100, 2)) %>%
+  arrange(desc(missing))
+
+print(freq_missing)
+
+# Sev table missing value summary
+sev_missing <- cargo_claim_sev %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "missing") %>%
+  mutate(pct = round(missing / nrow(cargo_claim_sev) * 100, 2)) %>%
+  arrange(desc(missing))
+
+print(sev_missing)
+
+
+# Stage 5: resolve the missing value 
+# Step 1: Build sev lookup 
+sev_lookup <- cargo_claim_sev %>%
+  filter(!is.na(policy_id), !is.na(shipment_id)) %>%
+  mutate(
+    n_complete = rowSums(!is.na(across(where(is.numeric))))
+  ) %>%
+  group_by(policy_id, shipment_id) %>%
+  arrange(desc(n_complete), .by_group = TRUE) %>% #picking the row with the most complete information (least NAs)
+  summarise(
+    solar_radiation_sev  = first(na.omit(solar_radiation)),
+    debris_density_sev   = first(na.omit(debris_density)),
+    exposure_sev         = first(na.omit(exposure)),
+    cargo_value_sev      = first(na.omit(cargo_value)),
+    weight_sev           = first(na.omit(weight)),
+    distance_sev         = first(na.omit(distance)),
+    transit_duration_sev = first(na.omit(transit_duration)),
+    pilot_experience_sev = first(na.omit(pilot_experience)),
+    vessel_age_sev       = first(na.omit(vessel_age)),
+    route_risk_sev       = first(na.omit(route_risk)),
+    cargo_type_sev       = first(na.omit(cargo_type)),
+    container_type_sev   = first(na.omit(container_type)),
+    .groups = "drop"
+  )
+
+# Step 1.1: Apply sev lookup to fill freq missing values 
+cargo_claim_freq <- cargo_claim_freq %>%
+  left_join(sev_lookup, by = c("policy_id", "shipment_id")) %>%
+  mutate(
+    solar_radiation  = if_else(is.na(solar_radiation), solar_radiation_sev, solar_radiation),
+    debris_density   = if_else(is.na(debris_density), debris_density_sev, debris_density),
+    exposure         = if_else(is.na(exposure), exposure_sev, exposure),
+    cargo_value      = if_else(is.na(cargo_value), cargo_value_sev, cargo_value),
+    weight           = if_else(is.na(weight), weight_sev, weight),
+    distance         = if_else(is.na(distance), distance_sev, distance),
+    transit_duration = if_else(is.na(transit_duration), transit_duration_sev, transit_duration),
+    pilot_experience = if_else(is.na(pilot_experience), pilot_experience_sev, pilot_experience),
+    vessel_age       = if_else(is.na(vessel_age), vessel_age_sev, vessel_age),
+    route_risk       = if_else(is.na(route_risk), route_risk_sev, route_risk),
+    cargo_type       = if_else(is.na(cargo_type), cargo_type_sev, cargo_type),
+    container_type   = if_else(is.na(container_type), container_type_sev, container_type)
+  ) %>%
+  dplyr::select(-ends_with("_sev"))
+
+# Step 2: Build freq lookup to fill sev missing values
+freq_lookup <- cargo_claim_freq %>%
+  filter(!is.na(policy_id), !is.na(shipment_id)) %>%
+  mutate(
+    n_complete = rowSums(!is.na(across(where(is.numeric))))
+  ) %>%
+  group_by(policy_id, shipment_id) %>%
+  arrange(desc(n_complete), .by_group = TRUE) %>%
+  summarise(
+    solar_radiation_freq  = first(na.omit(solar_radiation)),
+    debris_density_freq   = first(na.omit(debris_density)),
+    exposure_freq         = first(na.omit(exposure)),
+    cargo_value_freq      = first(na.omit(cargo_value)),
+    weight_freq           = first(na.omit(weight)),
+    distance_freq         = first(na.omit(distance)),
+    transit_duration_freq = first(na.omit(transit_duration)),
+    pilot_experience_freq = first(na.omit(pilot_experience)),
+    vessel_age_freq       = first(na.omit(vessel_age)),
+    route_risk_freq       = first(na.omit(route_risk)),
+    cargo_type_freq       = first(na.omit(cargo_type)),
+    container_type_freq   = first(na.omit(container_type)),
+    .groups = "drop"
+  )
+
+# Step 2.1 — Apply freq lookup to fill sev missing values:
+cargo_claim_sev <- cargo_claim_sev %>%
+  left_join(freq_lookup, by = c("policy_id", "shipment_id")) %>%
+  mutate(
+    solar_radiation  = if_else(is.na(solar_radiation), solar_radiation_freq, solar_radiation),
+    debris_density   = if_else(is.na(debris_density), debris_density_freq, debris_density),
+    exposure         = if_else(is.na(exposure), exposure_freq, exposure),
+    cargo_value      = if_else(is.na(cargo_value), cargo_value_freq, cargo_value),
+    weight           = if_else(is.na(weight), weight_freq, weight),
+    distance         = if_else(is.na(distance), distance_freq, distance),
+    transit_duration = if_else(is.na(transit_duration), transit_duration_freq, transit_duration),
+    pilot_experience = if_else(is.na(pilot_experience), pilot_experience_freq, pilot_experience),
+    vessel_age       = if_else(is.na(vessel_age), vessel_age_freq, vessel_age),
+    route_risk       = if_else(is.na(route_risk), route_risk_freq, route_risk),
+    cargo_type       = if_else(is.na(cargo_type), cargo_type_freq, cargo_type),
+    container_type   = if_else(is.na(container_type), container_type_freq, container_type)
+  ) %>%
+ dplyr::select(-ends_with("_freq"))
+
+# Step 3: Verify both tables
+# Check remaining missing values
+cargo_claim_freq %>% #improved but still blanks
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  glimpse()
+
+cargo_claim_sev %>% #almost perfect
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  glimpse()
+
+# Check row counts
+nrow(cargo_claim_freq) # 124,982
+nrow(cargo_claim_sev)  # 30,650
+
+## Stage 5.1
+# Clean severity dataset 
+cargo_claim_sev <- cargo_claim_sev %>%
+  filter(
+    !is.na(claim_amount),          # remove NAs
+    claim_amount > 0,              # remove negatives
+    claim_amount <= 678000000      # remove above upper bound (~678,000K)
+  )
+
+nrow(cargo_claim_sev) # 30,558 (30650 - 44 unmatched row in freq - 45 negative $ - 3 huge $ ) # 45 -ve, 2233 below 31k, 3 exceed upper bound
+
+# Stage 6 — Set Out-of-Range Values to NA in FREQ table:
+cargo_claim_freq <- cargo_claim_freq %>%
+  mutate(
+    claim_count      = if_else(claim_count < 0 | claim_count > 5, NA_real_, claim_count),
+    cargo_value      = if_else(cargo_value < 50000 | cargo_value > 680000000, NA_real_, cargo_value),
+    weight           = if_else(weight < 1500 | weight > 250000, NA_real_, weight),
+    distance         = if_else(distance < 1 | distance > 100, NA_real_, distance),
+    transit_duration = if_else(transit_duration < 1 | transit_duration > 60, NA_real_, transit_duration),
+    pilot_experience = if_else(pilot_experience < 1 | pilot_experience > 30, NA_real_, pilot_experience),
+    vessel_age       = if_else(vessel_age < 1 | vessel_age > 50, NA_real_, vessel_age),
+    solar_radiation  = if_else(solar_radiation < 0 | solar_radiation > 1, NA_real_, solar_radiation),
+    debris_density   = if_else(debris_density < 0 | debris_density > 1, NA_real_, debris_density),
+    exposure         = if_else(exposure < 0 | exposure > 1, NA_real_, exposure),
+    route_risk       = if_else(!route_risk %in% 1:5, NA_real_, route_risk)
+  )
+
+# Stage 6 — Set Out-of-Range Values to NA in SEV table:
+cargo_claim_sev <- cargo_claim_sev %>%
+  mutate(
+    cargo_value      = if_else(cargo_value < 50000 | cargo_value > 680000000, NA_real_, cargo_value),
+    weight           = if_else(weight < 1500 | weight > 250000, NA_real_, weight),
+    distance         = if_else(distance < 1 | distance > 100, NA_real_, distance),
+    transit_duration = if_else(transit_duration < 1 | transit_duration > 60, NA_real_, transit_duration),
+    pilot_experience = if_else(pilot_experience < 1 | pilot_experience > 30, NA_real_, pilot_experience),
+    vessel_age       = if_else(vessel_age < 1 | vessel_age > 50, NA_real_, vessel_age),
+    solar_radiation  = if_else(solar_radiation < 0 | solar_radiation > 1, NA_real_, solar_radiation),
+    debris_density   = if_else(debris_density < 0 | debris_density > 1, NA_real_, debris_density),
+    exposure         = if_else(exposure < 0 | exposure > 1, NA_real_, exposure),
+    route_risk       = if_else(!route_risk %in% 1:5, NA_real_, route_risk)
+  )
+
+######### LOGIC: numeric column = median (take into acc only in range compute median, otherwise the median could be out of range), categorical column = mode, claim count NA impute with 0
+
+# Stage 7: Impute remaining NAs with median/mode
+get_mode <- function(x) {
+  x <- x[!is.na(x)]
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# FREQ table
+cargo_claim_freq <- cargo_claim_freq %>%
+  mutate(
+    claim_count      = if_else(is.na(claim_count), 0, claim_count),
+    cargo_value      = if_else(is.na(cargo_value), median(cargo_value, na.rm = TRUE), cargo_value),
+    weight           = if_else(is.na(weight), median(weight, na.rm = TRUE), weight),
+    distance         = if_else(is.na(distance), median(distance, na.rm = TRUE), distance),
+    transit_duration = if_else(is.na(transit_duration), median(transit_duration, na.rm = TRUE), transit_duration),
+    pilot_experience = if_else(is.na(pilot_experience), median(pilot_experience, na.rm = TRUE), pilot_experience),
+    vessel_age       = if_else(is.na(vessel_age), median(vessel_age, na.rm = TRUE), vessel_age),
+    solar_radiation  = if_else(is.na(solar_radiation), median(solar_radiation, na.rm = TRUE), solar_radiation),
+    debris_density   = if_else(is.na(debris_density), median(debris_density, na.rm = TRUE), debris_density),
+    exposure         = if_else(is.na(exposure), median(exposure, na.rm = TRUE), exposure),
+    cargo_type       = if_else(is.na(cargo_type), get_mode(cargo_type), cargo_type),
+    container_type   = if_else(is.na(container_type), get_mode(container_type), container_type),
+    route_risk       = if_else(is.na(route_risk), get_mode(route_risk), route_risk)
+  )
+
+# SEV table
+cargo_claim_sev <- cargo_claim_sev %>%
+  mutate(
+    cargo_value      = if_else(is.na(cargo_value), median(cargo_value, na.rm = TRUE), cargo_value),
+    weight           = if_else(is.na(weight), median(weight, na.rm = TRUE), weight),
+    distance         = if_else(is.na(distance), median(distance, na.rm = TRUE), distance),
+    transit_duration = if_else(is.na(transit_duration), median(transit_duration, na.rm = TRUE), transit_duration),
+    pilot_experience = if_else(is.na(pilot_experience), median(pilot_experience, na.rm = TRUE), pilot_experience),
+    vessel_age       = if_else(is.na(vessel_age), median(vessel_age, na.rm = TRUE), vessel_age),
+    solar_radiation  = if_else(is.na(solar_radiation), median(solar_radiation, na.rm = TRUE), solar_radiation),
+    debris_density   = if_else(is.na(debris_density), median(debris_density, na.rm = TRUE), debris_density),
+    exposure         = if_else(is.na(exposure), median(exposure, na.rm = TRUE), exposure),
+    cargo_type       = if_else(is.na(cargo_type), get_mode(cargo_type), cargo_type),
+    container_type   = if_else(is.na(container_type), get_mode(container_type), container_type),
+    route_risk       = if_else(is.na(route_risk), get_mode(route_risk), route_risk)
+  )
+
+##### Stage 8 — Fix dirty character columns
+# Step 1 — Strip everything after first underscore for ALL character columns
+cargo_claim_freq <- cargo_claim_freq %>%
+  mutate(across(where(is.character), ~ sub("_.*", "", .x)))
+
+cargo_claim_sev <- cargo_claim_sev %>%
+  mutate(across(where(is.character), ~ sub("_.*", "", .x)))
+
+# Step 2 — Safety fix for cargo_type (in case special characters bypass sub())
+cargo_claim_freq <- cargo_claim_freq %>%
+  mutate(
+    cargo_type = case_when(
+      grepl("platinum", cargo_type, ignore.case = TRUE)    ~ "platinum",
+      grepl("gold", cargo_type, ignore.case = TRUE)        ~ "gold",
+      grepl("cobalt", cargo_type, ignore.case = TRUE)      ~ "cobalt",
+      grepl("lithium", cargo_type, ignore.case = TRUE)     ~ "lithium",
+      grepl("supplies", cargo_type, ignore.case = TRUE)    ~ "supplies",
+      grepl("titanium", cargo_type, ignore.case = TRUE)    ~ "titanium",
+      grepl("rare earths", cargo_type, ignore.case = TRUE) ~ "rare earths",
+      TRUE ~ cargo_type
+    )
+  )
+
+cargo_claim_sev <- cargo_claim_sev %>%
+  mutate(
+    cargo_type = case_when(
+      grepl("platinum", cargo_type, ignore.case = TRUE)    ~ "platinum",
+      grepl("gold", cargo_type, ignore.case = TRUE)        ~ "gold",
+      grepl("cobalt", cargo_type, ignore.case = TRUE)      ~ "cobalt",
+      grepl("lithium", cargo_type, ignore.case = TRUE)     ~ "lithium",
+      grepl("supplies", cargo_type, ignore.case = TRUE)    ~ "supplies",
+      grepl("titanium", cargo_type, ignore.case = TRUE)    ~ "titanium",
+      grepl("rare earths", cargo_type, ignore.case = TRUE) ~ "rare earths",
+      TRUE ~ cargo_type
+    )
+  )
+
+# Step 3 — Safety fix for container_type
+cargo_claim_freq <- cargo_claim_freq %>%
+  mutate(
+    container_type = case_when(
+      grepl("DeepSpace", container_type, ignore.case = TRUE)    ~ "DeepSpace Haulbox",
+      grepl("HardSeal", container_type, ignore.case = TRUE)     ~ "HardSeal Transit Crate",
+      grepl("DockArc", container_type, ignore.case = TRUE)      ~ "DockArc Freight Case",
+      grepl("QuantumCrate", container_type, ignore.case = TRUE) ~ "QuantumCrate Module",
+      grepl("LongHaul", container_type, ignore.case = TRUE)     ~ "LongHaul Vault Canister",
+      TRUE ~ container_type
+    )
+  )
+
+cargo_claim_sev <- cargo_claim_sev %>%
+  mutate(
+    container_type = case_when(
+      grepl("DeepSpace", container_type, ignore.case = TRUE)    ~ "DeepSpace Haulbox",
+      grepl("HardSeal", container_type, ignore.case = TRUE)     ~ "HardSeal Transit Crate",
+      grepl("DockArc", container_type, ignore.case = TRUE)      ~ "DockArc Freight Case",
+      grepl("QuantumCrate", container_type, ignore.case = TRUE) ~ "QuantumCrate Module",
+      grepl("LongHaul", container_type, ignore.case = TRUE)     ~ "LongHaul Vault Canister",
+      TRUE ~ container_type
+    )
+  )
+
+# Step 4 — Verify
+sort(unique(cargo_claim_freq$cargo_type))      # 7 values
+sort(unique(cargo_claim_freq$container_type))  # 5 values
+sort(unique(cargo_claim_sev$cargo_type))       # 7 values
+sort(unique(cargo_claim_sev$container_type))   # 5 values
+
+
+##### Stage 9: Final Verification
+# Check no remaining NAs
+cargo_claim_freq %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  glimpse()
+nrow(cargo_claim_freq) # should be 124,982
+
+cargo_claim_sev %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  glimpse()
+nrow(cargo_claim_sev) # should be 30,558
+
+# Check no out-of-range values
+cargo_claim_freq %>%
+  summarise(
+    n_negative_count  = sum(claim_count < 0, na.rm = TRUE),
+    n_exceeds_5_count = sum(claim_count > 5, na.rm = TRUE),
+    n_out_cargo_value = sum(cargo_value < 50000 | cargo_value > 680000000, na.rm = TRUE),
+    n_out_weight      = sum(weight < 1500 | weight > 250000, na.rm = TRUE),
+    n_out_distance    = sum(distance < 1 | distance > 100, na.rm = TRUE),
+    n_out_transit     = sum(transit_duration < 1 | transit_duration > 60, na.rm = TRUE),
+    n_out_pilot       = sum(pilot_experience < 1 | pilot_experience > 30, na.rm = TRUE),
+    n_out_vessel      = sum(vessel_age < 1 | vessel_age > 50, na.rm = TRUE),
+    n_out_solar       = sum(solar_radiation < 0 | solar_radiation > 1, na.rm = TRUE),
+    n_out_debris      = sum(debris_density < 0 | debris_density > 1, na.rm = TRUE),
+    n_out_exposure    = sum(exposure < 0 | exposure > 1, na.rm = TRUE),
+    n_out_route       = sum(!route_risk %in% 1:5, na.rm = TRUE)
+  )
+
+cargo_claim_sev %>%
+  summarise(
+    n_negative_amount = sum(claim_amount < 0, na.rm = TRUE),
+    n_exceeds_amount  = sum(claim_amount > 678000000, na.rm = TRUE),
+    n_out_cargo_value = sum(cargo_value < 50000 | cargo_value > 680000000, na.rm = TRUE),
+    n_out_weight      = sum(weight < 1500 | weight > 250000, na.rm = TRUE),
+    n_out_distance    = sum(distance < 1 | distance > 100, na.rm = TRUE),
+    n_out_transit     = sum(transit_duration < 1 | transit_duration > 60, na.rm = TRUE),
+    n_out_pilot       = sum(pilot_experience < 1 | pilot_experience > 30, na.rm = TRUE),
+    n_out_vessel      = sum(vessel_age < 1 | vessel_age > 50, na.rm = TRUE),
+    n_out_solar       = sum(solar_radiation < 0 | solar_radiation > 1, na.rm = TRUE),
+    n_out_debris      = sum(debris_density < 0 | debris_density > 1, na.rm = TRUE),
+    n_out_exposure    = sum(exposure < 0 | exposure > 1, na.rm = TRUE),
+    n_out_route       = sum(!route_risk %in% 1:5, na.rm = TRUE)
+  )
+
+# Stage 10
+## Range Checks — cargo_freq_model_clean ###
+cat("=== FREQ TABLE RANGE CHECKS ===\n")
+# 1. claim_count (valid: 0-5)
+cat("claim_count:", min(cargo_claim_freq$claim_count), "to", max(cargo_claim_freq$claim_count), "\n")
+# 2. cargo_value (valid: 50K-680,000K)
+cat("cargo_value:", format(min(cargo_claim_freq$cargo_value), scientific = FALSE), "to", format(max(cargo_claim_freq$cargo_value), scientific = FALSE), "\n")
+# 3. weight (valid: 1,500-250,000)
+cat("weight:", min(cargo_claim_freq$weight), "to", max(cargo_claim_freq$weight), "\n")
+# 4. route_risk (valid: 1-5)
+cat("route_risk unique values:", unique(sort(cargo_claim_freq$route_risk)), "\n")
+# 5. distance (valid: 1-100)
+cat("distance:", min(cargo_claim_freq$distance), "to", max(cargo_claim_freq$distance), "\n")
+# 6. transit_duration (valid: 1-60)
+cat("transit_duration:", min(cargo_claim_freq$transit_duration), "to", max(cargo_claim_freq$transit_duration), "\n")
+# 7. pilot_experience (valid: 1-30)
+cat("pilot_experience:", min(cargo_claim_freq$pilot_experience), "to", max(cargo_claim_freq$pilot_experience), "\n")
+# 8. vessel_age (valid: 1-50)
+cat("vessel_age:", min(cargo_claim_freq$vessel_age), "to", max(cargo_claim_freq$vessel_age), "\n")
+# 9. solar_radiation (valid: 0-1)
+cat("solar_radiation:", min(cargo_claim_freq$solar_radiation), "to", max(cargo_claim_freq$solar_radiation), "\n")
+# 10. debris_density (valid: 0-1)
+cat("debris_density:", min(cargo_claim_freq$debris_density), "to", max(cargo_claim_freq$debris_density), "\n")
+# 11. exposure (valid: 0-1)
+cat("exposure:", min(cargo_claim_freq$exposure), "to", max(cargo_claim_freq$exposure), "\n")
+# 12. cargo_type (categorical)
+cat("cargo_type unique values:", unique(cargo_claim_freq$cargo_type), "\n")
+# 13. container_type (categorical)
+cat("container_type unique values:", unique(cargo_claim_freq$container_type), "\n")
+# Check a few raw values
+head(cargo_claim_freq$cargo_type, 20) # Should only be: platinum, gold, cobalt, lithium, supplies, titanium, rare earths
+
+### Range Checks — cargo_sev_model_clean ####
+cat("\n=== SEV TABLE RANGE CHECKS ===\n")
+# 1. claim_amount (valid: ~31K-678,000K)
+cat("claim_amount:", min(cargo_claim_sev$claim_amount), "to", max(cargo_claim_sev$claim_amount), "\n")
+# 2. cargo_value (valid: 50K-680,000K)
+cat("cargo_value:", min(cargo_claim_sev$cargo_value), "to", max(cargo_claim_sev$cargo_value), "\n")
+# 3. weight (valid: 1,500-250,000)
+cat("weight:", min(cargo_claim_sev$weight), "to", max(cargo_claim_sev$weight), "\n")
+# 4. route_risk (valid: 1-5)
+cat("route_risk unique values:", unique(sort(cargo_claim_sev$route_risk)), "\n")
+# 5. distance (valid: 1-100)
+cat("distance:", min(cargo_claim_sev$distance), "to", max(cargo_claim_sev$distance), "\n")
+# 6. transit_duration (valid: 1-60)
+cat("transit_duration:", min(cargo_claim_sev$transit_duration), "to", max(cargo_claim_sev$transit_duration), "\n")
+# 7. pilot_experience (valid: 1-30)
+cat("pilot_experience:", min(cargo_claim_sev$pilot_experience), "to", max(cargo_claim_sev$pilot_experience), "\n")
+# 8. vessel_age (valid: 1-50)
+cat("vessel_age:", min(cargo_claim_sev$vessel_age), "to", max(cargo_claim_sev$vessel_age), "\n")
+# 9. solar_radiation (valid: 0-1)
+cat("solar_radiation:", min(cargo_claim_sev$solar_radiation), "to", max(cargo_claim_sev$solar_radiation), "\n")
+# 10. debris_density (valid: 0-1)
+cat("debris_density:", min(cargo_claim_sev$debris_density), "to", max(cargo_claim_sev$debris_density), "\n")
+# 11. exposure (valid: 0-1)
+cat("exposure:", min(cargo_claim_sev$exposure), "to", max(cargo_claim_sev$exposure), "\n")
+# 12. cargo_type (categorical)
+cat("cargo_type unique values:", unique(cargo_claim_sev$cargo_type), "\n")
+# 13. container_type (categorical)
+cat("container_type unique values:", unique(cargo_claim_sev$container_type), "\n")
+
+
+# Stage 11 
+# Export CSV
+options(scipen = 999)
+
+## Stage 10: Export clean data
+write.csv(
+  cargo_claim_freq,
+  file.path(bronze_path, "cargo_claim_freq_update1.csv"),
+  row.names = FALSE 
+)
+
+write.csv(
+  cargo_claim_sev,
+  file.path(bronze_path, "cargo_claim_sev_update1.csv"),
+  row.names = FALSE
+)
+
+```
+
