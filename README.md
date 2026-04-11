@@ -21,7 +21,6 @@ Please follow the steps below in order.
 ## Step 1: Input Data
 Download the input Excel files from **SOA_2026_Case_Study_Materials** and place them in: `00_DataPrep/RawData`
 
----
 
 ## Step 2: Raw to Intermediate Data
 
@@ -29,14 +28,14 @@ In: `00_DataPrep/Scripts`
 run: `Raw_to_Intermediate.R`
 - This script converts raw data into intermediate datasets used in later stages.
 
----
+
 
 ## Step 3: Intermediate Processing
 
 Still in: `00_DataPrep/Scripts`
 - run the remaining **four R / Rmd scripts**, which further process the intermediate data for pricing and capital modelling.
 
----
+
 
 # Folder 2: 01_Pricing
 
