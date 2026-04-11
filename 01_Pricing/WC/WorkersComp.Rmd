@@ -14,7 +14,7 @@ library(lme4)
 library(glmmTMB)
 library(purrr)
 
-data_path <- '/Users/jeong-ilseung/ACTL5100/00_DataPrep/OutputData/'
+data_path <- paste0(getwd(), "/00_DataPrep/OutputData/")
 
 wc_freq_model_clean <- read_csv(paste0(data_path, "wc_freq_model.csv"))
 wc_sev_model_clean <- read_csv(paste0(data_path, "wc_sev_model.csv"))
