@@ -287,7 +287,7 @@ ef_claim_sev %>%
     median      = round(median(claim_amount), 0),
     n_above_790k = sum(claim_amount > 790000)
   ) %>%
-  arrange(desc(median))
+  arrange(desc(median)) %>%
   print(n = Inf, width = Inf)
   
   # Final decision:   
