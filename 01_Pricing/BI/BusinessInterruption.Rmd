@@ -14,7 +14,7 @@ library(lme4)
 library(MASS)
 library(purrr)
 
-data_path <- '/Users/jeong-ilseung/ACTL5100/00_DataPrep/OutputData/'
+data_path <- paste0(getwd(), "/00_DataPrep/OutputData/")
 
 bi_freq_model_clean <- read_csv(paste0(data_path, "bi_freq_model.csv"))
 bi_sev_model_clean <- read_csv(paste0(data_path, "bi_sev_model.csv"))
