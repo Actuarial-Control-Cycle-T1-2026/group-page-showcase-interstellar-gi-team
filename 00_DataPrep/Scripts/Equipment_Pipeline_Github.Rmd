@@ -11,7 +11,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r cars}
 # 0. Import Packages
 getwd()
-bronze_path <- paste0(getwd(), '/Bronze/') 
+intermediate_path <- paste0(getwd(), '/00_DataPrep/IntermediateOutput/')
+output_path <- paste0(getwd(), '/00_DataPrep/OutputData/')
 library(dplyr)
 library(readr)
 library(stringr)
@@ -21,9 +22,8 @@ library(tidyr)
 ```{r EQF Basic Joining}
 
 # Stage 1: Load Raw Data
-ef_freq_raw <- read_csv(paste0(bronze_path, "eqf_claim_freq.csv"))
-ef_sev_raw  <- read_csv(paste0(bronze_path, "eqf_claim_sev.csv"))
-
+ef_freq_raw <- read_csv(paste0(intermediate_path, "eqf_claim_freq.csv"))
+ef_sev_raw  <- read_csv(paste0(intermediate_path, "eqf_claim_sev.csv"))
 ef_claim_freq <- ef_freq_raw
 ef_claim_sev  <- ef_sev_raw
 
@@ -411,8 +411,8 @@ cat("equipment_type:",  sort(unique(ef_claim_sev$equipment_type)), "\n")
 
 # Stage 11: Export CSV
 options(scipen = 999)
-write.csv(ef_claim_freq, file.path(bronze_path, "ef_claim_freq_update.csv"), row.names = FALSE)
-write.csv(ef_claim_sev,  file.path(bronze_path, "ef_claim_sev_update.csv"),  row.names = FALSE)
+write.csv(ef_claim_freq, file.path(output_path, "ef_claim_freq_update.csv"), row.names = FALSE)
+write.csv(ef_claim_sev,  file.path(output_path, "ef_claim_sev_update.csv"),  row.names = FALSE)
 
 ```
 
