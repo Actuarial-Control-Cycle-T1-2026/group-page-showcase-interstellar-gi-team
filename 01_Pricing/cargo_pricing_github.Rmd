@@ -1,0 +1,1649 @@
+---
+title: "GLM_CARGO_claim"
+output: html_document
+date: "2026-03-14"
+---
+
+```{r setup, include=FALSE}
+install.packages("lme4")
+install.packages("glmmTMB")
+install.packages("kableExtra")
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(glmmTMB)
+library(kableExtra)
+library(MASS)
+
+bronze_path <- paste0(getwd(), '/Bronze/')
+
+cargo_freq_model_clean <- read_csv(paste0(bronze_path, "cargo_claim_freq_update1.csv"))
+cargo_sev_model_clean <- read_csv(paste0(bronze_path, "cargo_claim_sev_update1.csv"))
+```
+
+# CHECK DATA CLEANING
+```{r}
+######## Range Checks ########
+cat("=== FREQ TABLE RANGE CHECKS ===\n")
+# 1. claim_count (valid: 0-5)
+cat("claim_count:", min(cargo_freq_model_clean$claim_count), "to", max(cargo_freq_model_clean$claim_count), "\n")
+# 2. cargo_value (valid: 50K-680,000K)
+cat("cargo_value:", format(min(cargo_freq_model_clean$cargo_value), scientific = FALSE), "to", format(max(cargo_freq_model_clean$cargo_value), scientific = FALSE), "\n")
+# 3. weight (valid: 1,500-250,000)
+cat("weight:", min(cargo_freq_model_clean$weight), "to", max(cargo_freq_model_clean$weight), "\n")
+# 4. route_risk (valid: 1-5)
+cat("route_risk unique values:", unique(sort(cargo_freq_model_clean$route_risk)), "\n")
+# 5. distance (valid: 1-100)
+cat("distance:", min(cargo_freq_model_clean$distance), "to", max(cargo_freq_model_clean$distance), "\n")
+# 6. transit_duration (valid: 1-60)
+cat("transit_duration:", min(cargo_freq_model_clean$transit_duration), "to", max(cargo_freq_model_clean$transit_duration), "\n")
+# 7. pilot_experience (valid: 1-30)
+cat("pilot_experience:", min(cargo_freq_model_clean$pilot_experience), "to", max(cargo_freq_model_clean$pilot_experience), "\n")
+# 8. vessel_age (valid: 1-50)
+cat("vessel_age:", min(cargo_freq_model_clean$vessel_age), "to", max(cargo_freq_model_clean$vessel_age), "\n")
+# 9. solar_radiation (valid: 0-1)
+cat("solar_radiation:", min(cargo_freq_model_clean$solar_radiation), "to", max(cargo_freq_model_clean$solar_radiation), "\n")
+# 10. debris_density (valid: 0-1)
+cat("debris_density:", min(cargo_freq_model_clean$debris_density), "to", max(cargo_freq_model_clean$debris_density), "\n")
+# 11. exposure (valid: 0-1)
+cat("exposure:", min(cargo_freq_model_clean$exposure), "to", max(cargo_freq_model_clean$exposure), "\n")
+# 12. cargo_type (categorical)
+cat("cargo_type unique values:", unique(cargo_freq_model_clean$cargo_type), "\n")
+# 13. container_type (categorical)
+cat("container_type unique values:", unique(cargo_freq_model_clean$container_type), "\n")
+# Check a few raw values
+head(cargo_freq_model_clean$cargo_type, 20)
+
+cat("\n=== SEV TABLE RANGE CHECKS ===\n")
+# 1. claim_amount
+cat("claim_amount:", format(min(cargo_sev_model_clean$claim_amount), scientific = FALSE), "to", format(max(cargo_sev_model_clean$claim_amount), scientific = FALSE), "\n")
+# 2. cargo_value
+cat("cargo_value:", format(min(cargo_sev_model_clean$cargo_value), scientific = FALSE), "to", format(max(cargo_sev_model_clean$cargo_value), scientific = FALSE), "\n")
+# 3. weight (valid: 1,500-250,000)
+cat("weight:", min(cargo_sev_model_clean$weight), "to", max(cargo_sev_model_clean$weight), "\n")
+# 4. route_risk (valid: 1-5)
+cat("route_risk unique values:", unique(sort(cargo_sev_model_clean$route_risk)), "\n")
+# 5. distance (valid: 1-100)
+cat("distance:", min(cargo_sev_model_clean$distance), "to", max(cargo_sev_model_clean$distance), "\n")
+# 6. transit_duration (valid: 1-60)
+cat("transit_duration:", min(cargo_sev_model_clean$transit_duration), "to", max(cargo_sev_model_clean$transit_duration), "\n")
+# 7. pilot_experience (valid: 1-30)
+cat("pilot_experience:", min(cargo_sev_model_clean$pilot_experience), "to", max(cargo_sev_model_clean$pilot_experience), "\n")
+# 8. vessel_age (valid: 1-50)
+cat("vessel_age:", min(cargo_sev_model_clean$vessel_age), "to", max(cargo_sev_model_clean$vessel_age), "\n")
+# 9. solar_radiation (valid: 0-1)
+cat("solar_radiation:", min(cargo_sev_model_clean$solar_radiation), "to", max(cargo_sev_model_clean$solar_radiation), "\n")
+# 10. debris_density (valid: 0-1)
+cat("debris_density:", min(cargo_sev_model_clean$debris_density), "to", max(cargo_sev_model_clean$debris_density), "\n")
+# 11. exposure (valid: 0-1)
+cat("exposure:", min(cargo_sev_model_clean$exposure), "to", max(cargo_sev_model_clean$exposure), "\n")
+# 12. cargo_type (categorical)
+cat("cargo_type unique values:", unique(cargo_sev_model_clean$cargo_type), "\n")
+# 13. container_type (categorical)
+cat("container_type unique values:", unique(cargo_sev_model_clean$container_type), "\n")
+```
+
+# DATA FORMATING
+```{r}
+# Casting DF — Freq table
+df_cargo_freq <- cargo_freq_model_clean %>%
+  mutate(
+    cargo_value      = as.numeric(cargo_value),
+    weight           = as.numeric(weight),
+    distance         = as.numeric(distance),
+    transit_duration = as.numeric(transit_duration),
+    pilot_experience = as.numeric(pilot_experience),
+    vessel_age       = as.numeric(vessel_age),
+    solar_radiation  = as.numeric(solar_radiation),
+    debris_density   = as.numeric(debris_density),
+    exposure         = as.numeric(exposure),
+    route_risk       = factor(route_risk, levels = 1:5, ordered = TRUE),
+    cargo_type       = factor(cargo_type),
+    container_type   = factor(container_type)
+  ) %>%
+  filter(!is.na(claim_count), exposure > 0)
+
+# Casting DF — Sev table
+df_cargo_sev <- cargo_sev_model_clean %>%
+  mutate(
+    cargo_value      = as.numeric(cargo_value),
+    weight           = as.numeric(weight),
+    distance         = as.numeric(distance),
+    transit_duration = as.numeric(transit_duration),
+    pilot_experience = as.numeric(pilot_experience),
+    vessel_age       = as.numeric(vessel_age),
+    solar_radiation  = as.numeric(solar_radiation),
+    debris_density   = as.numeric(debris_density),
+    exposure         = as.numeric(exposure),
+    route_risk       = factor(route_risk, levels = 1:5, ordered = TRUE),
+    cargo_type       = factor(cargo_type),
+    container_type   = factor(container_type)
+  ) %>%
+  filter(!is.na(claim_amount), claim_amount > 0)
+
+# Verify
+nrow(df_cargo_freq)
+nrow(df_cargo_sev)
+glimpse(df_cargo_freq)
+```
+
+# Exploratory Data Analysis 1
+```{r}
+cat("Mean of claim_count:", mean(df_cargo_freq$claim_count), "\n")
+cat("Variance of claim_count:", var(df_cargo_freq$claim_count), "\n")
+cat("Variance/Mean ratio:", var(df_cargo_freq$claim_count) / mean(df_cargo_freq$claim_count), "\n")
+```
+
+# Exploratory Data Analysis 2
+```{r}
+summary(df_cargo_freq$claim_count)
+barplot(table(df_cargo_freq$claim_count),
+        main = "Claim Count Distribution",
+        xlab = "Claim Count",
+        ylab = "Number of Policies",
+        col  = "steelblue")
+
+summary(df_cargo_sev$claim_amount)
+# Raw claim amount
+ggplot(df_cargo_sev, aes(x = claim_amount)) +
+  geom_histogram(bins = 50, fill = "steelblue") +
+  labs(title = "Distribution of Claim Amount")
+
+# Log transformed
+ggplot(df_cargo_sev, aes(x = log(claim_amount))) +
+  geom_histogram(bins = 50, fill = "steelblue") +
+  labs(title = "Distribution of Log Claim Amount")
+
+# See if cargo_type explains the bimodality
+ggplot(df_cargo_sev, aes(x = log(claim_amount), fill = cargo_type)) +
+  geom_histogram(bins = 50, alpha = 0.6) +
+  labs(title = "Log Claim Amount by Cargo Type")
+```
+
+# CHECK CARGO & CONTAINER FIT FREQ MODELLING 
+```{r}
+# Test for caro and container type (categorical variable)
+# ─ Base model (neither cargo_type nor container_type) ─
+model_base <- glm(
+  claim_count ~ cargo_value + weight + distance + 
+    transit_duration + pilot_experience + vessel_age + 
+    solar_radiation + debris_density + route_risk + 
+    offset(log(exposure)),
+  family = poisson(link = "log"),
+  data = df_cargo_freq)
+
+# ─ Model with cargo_type only ─
+model_with_cargo <- glm(
+  claim_count ~ cargo_value + weight + distance + 
+    transit_duration + pilot_experience + vessel_age + 
+    solar_radiation + debris_density + route_risk + 
+    cargo_type +
+    offset(log(exposure)),
+  family = poisson(link = "log"),
+  data = df_cargo_freq)
+
+# ─ Model with container_type only ──
+model_with_container <- glm(
+  claim_count ~ cargo_value + weight + distance + 
+    transit_duration + pilot_experience + vessel_age + 
+    solar_radiation + debris_density + route_risk + 
+    container_type +
+    offset(log(exposure)),
+  family = poisson(link = "log"),
+  data = df_cargo_freq)
+
+# ─ Model with both ─
+model_with_both <- glm(
+  claim_count ~ cargo_value + weight + distance + 
+    transit_duration + pilot_experience + vessel_age + 
+    solar_radiation + debris_density + route_risk + 
+    cargo_type + container_type +
+    offset(log(exposure)),
+  family = poisson(link = "log"),
+  data = df_cargo_freq)
+
+# ─ Test 1: Does cargo_type add value on top of container_type? ─
+cat("=== Testing cargo_type (controlling for container_type) ===\n")
+anova(model_with_container, model_with_both, test = "Chisq")
+
+# ─ Test 2: Does container_type add value on top of cargo_type? ─
+cat("=== Testing container_type (controlling for cargo_type) ===\n")
+anova(model_with_cargo, model_with_both, test = "Chisq")
+
+# both cargo and container types are significant to add in.
+```
+
+# FREQ GLM FIT - POISSON
+```{r}
+# Model 1a: Frequency Model (Poisson GLM) 
+model_cargo_freq1 <- glm(
+  claim_count ~ cargo_value + weight + distance + transit_duration + pilot_experience + vessel_age + solar_radiation + debris_density + route_risk + cargo_type + container_type + offset(log(exposure)),
+  family = poisson(link = "log"),
+  data = df_cargo_freq
+)
+
+summary(model_cargo_freq1)
+
+```
+GLM equation: log(E[claim_count])=fixed effects+log(exposure)
+
+# POISSON DISPERSION CHECK
+```{r}
+# ratio check poisson suitable? 
+deviance(model_cargo_freq1) / df.residual(model_cargo_freq1)
+
+# Refit with Quasi Poisson
+model_freq_quasi <- glm(claim_count ~ cargo_value + weight + distance + transit_duration + pilot_experience + vessel_age + solar_radiation + debris_density + route_risk + cargo_type + container_type + offset(log(exposure)),
+                        family = quasipoisson(link = "log"),
+                        data = df_cargo_freq)
+summary(model_freq_quasi)
+```
+
+# FREQ GLM FIT: NEGATIVE BINOMIAL
+```{r}
+# Model 2: Fit Negative Binomial 
+model_cargo_freq2 <- glm.nb(
+  claim_count ~ cargo_value + weight + distance + transit_duration + pilot_experience + vessel_age + solar_radiation + debris_density + route_risk + cargo_type + container_type + offset(log(exposure)),
+  data = df_cargo_freq)
+
+summary(model_cargo_freq2)
+```
+
+# NB DISPERSION CHECK
+```{r}
+# Dispersion ratio = residual deviance / degrees of freedom
+dispersion_ratio <- model_cargo_freq2$deviance / 
+                    model_cargo_freq2$df.residual
+
+cat("Dispersion ratio:", dispersion_ratio, "\n")
+
+```
+
+# TRIMMED NB - FINAL 
+```{r}
+model_cargo_freq3 <- glm.nb(claim_count ~ cargo_value + pilot_experience + route_risk + cargo_type + container_type + offset(log(exposure)),
+  data = df_cargo_freq)
+
+summary(model_cargo_freq3)
+
+# Compare AIC NB
+cat("Full NB AIC:", AIC(model_cargo_freq2), "\n")
+cat("Trimmed NB AIC:", AIC(model_cargo_freq3), "\n")
+```
+
+Final freq model :model_cargo_freq3
+
+
+# SEV GLM FIT: GAMMA 
+```{r}
+model_cargo_sev1 <- glm( claim_amount ~ cargo_value + weight + distance + transit_duration + pilot_experience + vessel_age + solar_radiation + debris_density + route_risk + cargo_type + container_type,
+  family = Gamma(link = "log"), data = df_cargo_sev)
+
+summary(model_cargo_sev1)
+```
+
+# TRIMMED SEV GLM FIT: GAMMA 
+```{r}
+# Trimmed severity model 
+model_cargo_sev2 <- glm( claim_amount ~ cargo_value + weight + solar_radiation +  debris_density + route_risk + cargo_type,
+  family = Gamma(link = "log"),
+  data = df_cargo_sev)
+
+summary(model_cargo_sev2)
+
+# Compare AIC GAMMA
+cat("Full Gamma AIC:", AIC(model_cargo_sev1), "\n")
+cat("Trimmed Gamma AIC:", AIC(model_cargo_sev2), "\n")
+```
+Final sev model :model_cargo_sev2
+
+# TRIMMED GAMMA MODEL RESIDUAL PLOT 
+```{r}
+par(mfrow = c(2, 2))
+plot(model_cargo_sev2)
+```
+
+# SEV FITTED MODEL CARGO TYPE DISTRIBUTION 
+```{r}
+boxplot(fitted(model_cargo_sev2) ~ df_cargo_sev$cargo_type,
+        las = 2, main = "Fitted values by cargo type")
+```
+The severity model shows evidence of heavy-tailed claim behaviour in extreme scenarios. 
+
+# NB INVENTORY DATA
+```{r}
+set.seed(123)
+
+# Fleet sizes from inventory data
+n_helionis <- 1160
+n_bayesia  <- 1128
+n_oryn     <- 774
+n_total    <- n_helionis + n_bayesia + n_oryn  # 3062
+```
+
+# SAMPLING NB 
+```{r}
+make_nb_data_cargo <- function(df_freq, df_sev, n_helionis, n_bayesia, n_oryn) {
+  
+  # Container counts per solar system
+  container_helionis <- c(
+    rep("DeepSpace Haulbox",       58),
+    rep("DockArc Freight Case",   116),
+    rep("HardSeal Transit Crate", 580),
+    rep("LongHaul Vault Canister",232),
+    rep("QuantumCrate Module",    174)
+  )
+  
+  container_bayesia <- c(
+    rep("DeepSpace Haulbox",       56),
+    rep("DockArc Freight Case",   113),
+    rep("HardSeal Transit Crate", 564),
+    rep("LongHaul Vault Canister",226),
+    rep("QuantumCrate Module",    169)
+  )
+  
+  container_oryn <- c(
+    rep("DeepSpace Haulbox",       39),
+    rep("DockArc Freight Case",    77),
+    rep("HardSeal Transit Crate", 387),
+    rep("LongHaul Vault Canister",155),
+    rep("QuantumCrate Module",    116)
+  )
+  
+  total_n <- n_helionis + n_bayesia + n_oryn
+  
+  sampled_rows <- df_sev[sample(seq_len(nrow(df_sev)), total_n, replace = TRUE), ] #row based sampling to keep the feature to the row
+  
+  nb_data <- data.frame(
+    cargo_value      = sampled_rows$cargo_value,
+    pilot_experience = sampled_rows$pilot_experience,
+    route_risk       = sampled_rows$route_risk,
+    cargo_type       = sampled_rows$cargo_type,
+    weight           = sampled_rows$weight,
+    solar_radiation  = sampled_rows$solar_radiation,
+    debris_density   = sampled_rows$debris_density,
+    exposure         = 1
+  )
+  
+  # Replace with required future portfolio container mix
+  nb_data$container_type <- factor(
+    c(container_helionis, container_bayesia, container_oryn),
+    levels = levels(df_freq$container_type)
+  )
+  
+  # Solar system tags
+  nb_data$solar_system <- c(
+    rep("Helionis Cluster", n_helionis),
+    rep("Bayesia System",   n_bayesia),
+    rep("Oryn Delta",       n_oryn)
+  )
+  
+  # Match factor levels
+  nb_data$cargo_type <- factor(nb_data$cargo_type, 
+                               levels = levels(df_freq$cargo_type))
+  nb_data$route_risk <- factor(nb_data$route_risk,
+                               levels = levels(df_freq$route_risk),
+                               ordered = TRUE)
+  
+  # Cap weight
+  container_max_weight <- c(
+    "DeepSpace Haulbox"       = 25000,
+    "DockArc Freight Case"    = 50000,
+    "HardSeal Transit Crate"  = 100000,
+    "LongHaul Vault Canister" = 150000,
+    "QuantumCrate Module"     = 250000
+  )
+  
+  nb_data <- nb_data %>%
+    mutate(
+      weight = pmin(weight,
+                    container_max_weight[as.character(container_type)]))
+  
+  # Verify all set
+  cat("Weight cap verification:\n")
+  print(nb_data %>%
+    group_by(container_type) %>%
+    summarise(
+      max_weight  = max(weight),
+      mean_weight = round(mean(weight), 0),
+      .groups = "drop"
+    ))
+  
+  return(nb_data)
+}
+```
+
+# GENERARE NB PORTFOLIO
+```{r}
+nb_data_cargo <- make_nb_data_cargo(
+  df_freq    = df_cargo_freq,
+  df_sev     = df_cargo_sev,
+  n_helionis = n_helionis,
+  n_bayesia  = n_bayesia,
+  n_oryn     = n_oryn
+)
+
+glimpse(nb_data_cargo)
+table(nb_data_cargo$solar_system)
+table(nb_data_cargo$container_type)
+table(nb_data_cargo$cargo_type)
+```
+
+# CHECK NB PORTFOLIO - all criteria satisfied 
+```{r}
+weight_check <- nb_data_cargo %>%
+  group_by(solar_system, container_type) %>%
+  summarise(
+    n_vessels      = n(),
+    max_weight     = max(weight),
+    total_capacity = max(weight) * n(),
+    actual_total   = sum(weight),
+    is_exceeded    = sum(weight) > max(weight) * n(),
+    .groups = "drop"
+  ) %>%
+  arrange(solar_system, container_type)
+
+print(weight_check)
+```
+# NB DATA DISTRIBUTION
+```{r}
+nb_data_cargo %>%
+  group_by(cargo_type) %>%
+  summarise(
+    mean_weight = round(mean(weight), 0),
+    max_weight  = max(weight)
+  ) %>%
+  arrange(desc(mean_weight))
+
+nb_data_cargo %>%
+  group_by(cargo_type) %>%
+  summarise(
+    mean_weight      = round(mean(weight), 0),
+    mean_cargo_value = round(mean(cargo_value), 0)
+  ) %>%
+  arrange(desc(mean_cargo_value))
+```
+
+
+# QUICK NB DATA PREDICTION 
+```{r}
+# Predict claim frequency
+nb_data_cargo$freq_pred <- predict(
+  model_cargo_freq3,
+  newdata = nb_data_cargo,
+  type = "response"
+)
+
+# Predict claim severity
+nb_data_cargo$sev_pred <- predict(
+  model_cargo_sev2,
+  newdata = nb_data_cargo,
+  type = "response"
+)
+
+# Expected loss per unit
+nb_data_cargo$expected_loss <- nb_data_cargo$freq_pred * nb_data_cargo$sev_pred
+
+cat("Mean predicted claim frequency:", mean(nb_data_cargo$freq_pred), "\n")
+cat("Mean predicted claim severity:", mean(nb_data_cargo$sev_pred), "\n")
+cat("Mean predicted loss per policy:", mean(nb_data_cargo$expected_loss), "\n")
+cat("Total expected loss:", sum(nb_data_cargo$expected_loss), "\n")
+
+aggregate(expected_loss ~ cargo_type, data = nb_data_cargo, sum)
+aggregate(expected_loss ~ container_type, data = nb_data_cargo, sum)
+aggregate(sev_pred ~ cargo_type, data = nb_data_cargo, mean)
+```
+
+# SPLIT CARGO TYPE SEGMENT 
+```{r}
+nb_data_cargo$segment <- ifelse(
+  nb_data_cargo$cargo_type %in% c("gold", "platinum"),
+  "high_value",
+  "standard"
+)
+
+table(nb_data_cargo$segment)
+aggregate(expected_loss ~ segment, data = nb_data_cargo, sum)
+```
+
+# PARAMETERS
+```{r}
+nb_high <- subset(nb_data_cargo, segment == "high_value")
+nb_std  <- subset(nb_data_cargo, segment == "standard")
+
+theta <- model_cargo_freq3$theta
+gamma_disp <- summary(model_cargo_sev2)$dispersion
+```
+
+# SIMULATION FUNCTION
+```{r}
+simulate_aggregate_loss <- function(freq_pred, sev_pred, theta, gamma_disp, n_sim) {
+  
+  n_units <- length(freq_pred)
+  agg_loss <- numeric(n_sim)
+  gamma_shape <- 1 / gamma_disp
+  
+  for (i in 1:n_sim) {
+    
+    claim_counts <- rnbinom(n_units, mu = freq_pred, size = theta)
+    total_loss <- 0
+    
+    for (j in 1:n_units) {
+      if (claim_counts[j] > 0) {
+        gamma_rate <- gamma_shape / sev_pred[j]
+        claims <- rgamma(claim_counts[j], shape = gamma_shape, rate = gamma_rate)
+        total_loss <- total_loss + sum(claims)
+      }
+    }
+    
+    agg_loss[i] <- total_loss
+  }
+  
+  return(agg_loss)
+}
+```
+
+
+# 100000 SIMULATION, SETSEED(123)
+```{r}
+set.seed(123)
+n_sim <- 100000
+
+cat("Running simulation for high-value segment...\n")
+agg_high <- simulate_aggregate_loss(
+  freq_pred = nb_high$freq_pred,
+  sev_pred = nb_high$sev_pred,
+  theta = theta,
+  gamma_disp = gamma_disp,
+  n_sim = n_sim
+)
+
+cat("Running simulation for standard segment...\n")
+agg_std <- simulate_aggregate_loss(
+  freq_pred = nb_std$freq_pred,
+  sev_pred = nb_std$sev_pred,
+  theta = theta,
+  gamma_disp = gamma_disp,
+  n_sim = n_sim
+)
+
+# Combined portfolio
+agg_total <- agg_high + agg_std
+```
+
+# SIMULATION RESULT 
+```{r}
+summarise_loss <- function(x, n_policies) {
+  c(
+    
+    riskcount = n_policies,
+    Loss_Mean       = mean(x),
+    VaR50      = quantile(x, 0.50),
+    VaR90      = quantile(x, 0.90),
+    VaR95      = quantile(x, 0.95),
+    VaR99      = quantile(x, 0.99),
+    VaR99.95    = quantile(x, 0.9995),
+    SD         = sd(x),
+    Min        = min(x),
+    Median     = quantile(x, 0.50),
+    TVaR95     = mean(x[x > quantile(x, 0.95)]),
+    TVaR99     = mean(x[x > quantile(x, 0.99)]),
+    TVaR99.5   = mean(x[x > quantile(x, 0.9995)])
+  )
+}
+
+summary_high  <- summarise_loss(agg_high,  n_policies = nrow(nb_high))
+summary_std   <- summarise_loss(agg_std,   n_policies = nrow(nb_std))
+summary_total <- summarise_loss(agg_total, n_policies = nrow(nb_data_cargo))
+
+summary_high
+summary_std
+summary_total
+```
+
+# SIMULATION RESULT DISTRIBUTION
+```{r}
+par(mfrow = c(1, 3))
+
+hist(agg_high, breaks = 50, main = "High-value Segment",
+     xlab = "Aggregate Loss", col = "lightcoral", border = "white")
+
+hist(agg_std, breaks = 50, main = "Standard Segment",
+     xlab = "Aggregate Loss", col = "lightblue", border = "white")
+
+hist(agg_total, breaks = 50, main = "Total Portfolio",
+     xlab = "Aggregate Loss", col = "lightgreen", border = "white")
+```
+
+# LOADING SIMULATION - PARAMETERS AND SEGMENTS
+```{r}
+set.seed(123)
+
+# Parameters 
+loading <- 0.40
+n_sim   <- 100000
+
+# Segment flag 
+nb_data_cargo$segment <- ifelse(
+  nb_data_cargo$cargo_type %in% c("gold", "platinum"),
+  "high_value",
+  "standard")
+
+nb_high <- subset(nb_data_cargo, segment == "high_value")
+nb_std  <- subset(nb_data_cargo, segment == "standard")
+
+# Model parameters 
+theta      <- model_cargo_freq3$theta
+gamma_disp <- summary(model_cargo_sev2)$dispersion
+gamma_shape <- 1 / gamma_disp
+```
+
+# SIMULATION FUNCTION
+```{r}
+simulate_segment <- function(freq_pred, sev_pred, theta, gamma_shape, loading, n_sim) {
+  
+  n_units <- length(freq_pred)
+  
+  # Expected premium revenue based on loaded expected loss
+  expected_loss_by_policy <- freq_pred * sev_pred
+  premium_revenue <- sum(expected_loss_by_policy * (1 + loading))
+  
+  results <- data.frame(
+    aggregate_cost   = numeric(n_sim),   # claims cost
+    revenue          = numeric(n_sim),   # premium revenue
+    net_revenue      = numeric(n_sim),   # underwriting profit
+    loss_ratio       = numeric(n_sim)
+  )
+  
+  for (i in 1:n_sim) {
+    
+    claim_counts <- rnbinom(n_units, mu = freq_pred, size = theta)
+    total_loss <- 0
+    
+    for (j in 1:n_units) {
+      if (claim_counts[j] > 0) {
+        gamma_rate <- gamma_shape / sev_pred[j]
+        claims <- rgamma(claim_counts[j], shape = gamma_shape, rate = gamma_rate)
+        total_loss <- total_loss + sum(claims)
+      }
+    }
+    
+    results$aggregate_cost[i] <- total_loss
+    results$revenue[i]        <- premium_revenue
+    results$net_revenue[i]    <- premium_revenue - total_loss
+    results$loss_ratio[i]     <- total_loss / premium_revenue
+  }
+  
+  return(results)
+}
+```
+
+# RUN SIMULATION 
+```{r}
+cat("Running segmented simulation...\n")
+
+sim_high <- simulate_segment(
+  freq_pred   = nb_high$freq_pred,
+  sev_pred    = nb_high$sev_pred,
+  theta       = theta,
+  gamma_shape = gamma_shape,
+  loading     = loading,
+  n_sim       = n_sim
+)
+
+sim_std <- simulate_segment(
+  freq_pred   = nb_std$freq_pred,
+  sev_pred    = nb_std$sev_pred,
+  theta       = theta,
+  gamma_shape = gamma_shape,
+  loading     = loading,
+  n_sim       = n_sim
+)
+```
+
+# AGGREGATE SIMULATION RESULT
+```{r}
+sim_total <- data.frame(
+  aggregate_cost = sim_high$aggregate_cost + sim_std$aggregate_cost,
+  revenue        = sim_high$revenue + sim_std$revenue,
+  net_revenue    = sim_high$net_revenue + sim_std$net_revenue,
+  loss_ratio     = (sim_high$aggregate_cost + sim_std$aggregate_cost) /
+                   (sim_high$revenue + sim_std$revenue))
+```
+
+# SIMULATION RESULT SUMMARY
+```{r}
+summarise_results <- function(sim_df, n_policies, loading) {
+  data.frame(
+    Risk_count = n_policies,
+    loading = paste0(loading * 100, "%"),
+    Premium = mean(sim_df$revenue),
+    
+    Mean_Cost        = mean(sim_df$aggregate_cost),
+    SD_Cost          = sd(sim_df$aggregate_cost),
+    VAR50_Cost             = quantile(sim_df$aggregate_cost, 0.50),
+    VAR90_Cost             = quantile(sim_df$aggregate_cost, 0.90),
+    VAR95_Cost             = quantile(sim_df$aggregate_cost, 0.95),
+    VAR99_Cost             = quantile(sim_df$aggregate_cost, 0.99),
+    VAR99.95_Cost           = quantile(sim_df$aggregate_cost, 0.9995),
+    TVaR95_Cost      = mean(sim_df$aggregate_cost[sim_df$aggregate_cost > quantile(sim_df$aggregate_cost, 0.95)]),
+    TVaR99_Cost      = mean(sim_df$aggregate_cost[sim_df$aggregate_cost > quantile(sim_df$aggregate_cost, 0.99)]),
+    TVaR99.95_Cost    = mean(sim_df$aggregate_cost[sim_df$aggregate_cost > quantile(sim_df$aggregate_cost, 0.9995)]),
+    
+    Mean_NetRevenue  = mean(sim_df$net_revenue),
+    SD_NetRevenue    = sd(sim_df$net_revenue),
+    Prob_Loss        = mean(sim_df$net_revenue < 0),
+    VaR50_NetRevenue = quantile(sim_df$net_revenue, 0.50),
+    VaR90_NetRevenue = quantile(sim_df$net_revenue, 0.10),
+    VaR95_NetRevenue = quantile(sim_df$net_revenue, 0.05),
+    VaR99_NetRevenue = quantile(sim_df$net_revenue, 0.01),
+    VaR99.95_NetRevenue = quantile(sim_df$net_revenue, 0.0005),
+    
+    Mean_LossRatio   = mean(sim_df$loss_ratio),
+    Median_LossRatio = median(sim_df$loss_ratio)
+  )
+}
+```
+
+# SIMULATION RESULT SUMMARY
+```{r}
+# calls
+summary_high  <- summarise_results(sim_high,  n_policies = nrow(nb_high),        loading = loading)
+summary_std   <- summarise_results(sim_std,   n_policies = nrow(nb_std),         loading = loading)
+summary_total <- summarise_results(sim_total, n_policies = nrow(nb_data_cargo),  loading = loading)
+
+cat("\n=== High Value Segment ===\n")
+print(summary_high)
+
+cat("\n=== Standard Segment ===\n")
+print(summary_std)
+
+cat("\n=== Total Portfolio ===\n")
+print(summary_total)
+```
+
+# SUMMARY OUTPUT
+```{r}
+
+cat("\n=== SHORT TERM CARGO SIMULATION RESULTS ===\n")
+cat("Risk Count:  ", nrow(nb_data_cargo), "\n")
+cat("Loading:      40%\n")
+
+# Premium 
+cat("\n--- Premium (Fixed) ---\n")
+cat("Aggregate Premium: ", round(mean(sim_total$revenue), 0), "\n")
+
+# Aggregate Loss 
+cat("\n--- Aggregate Loss ---\n")
+cat("Mean Aggregate Loss: ", round(mean(sim_total$aggregate_cost),0), "\n")
+cat("SD Aggregate Loss:   ", round(sd(sim_total$aggregate_cost),0), "\n")
+cat("Median:              ", round(median(sim_total$aggregate_cost), 0), "\n")
+cat("50%:                 ", round(quantile(sim_total$aggregate_cost, 0.50),0), "\n")
+cat("90%:                 ", round(quantile(sim_total$aggregate_cost, 0.90),0), "\n")
+cat("95%:                 ", round(quantile(sim_total$aggregate_cost, 0.95),0), "\n")
+cat("99%:                 ", round(quantile(sim_total$aggregate_cost, 0.99),0), "\n")
+cat("99.95%:               ", round(quantile(sim_total$aggregate_cost, 0.9995),0), "\n")
+cat("TVaR 95%:            ", round(mean(sim_total$aggregate_cost[sim_total$aggregate_cost > quantile(sim_total$aggregate_cost, 0.95)]),0),"\n")
+cat("TVaR 99%:            ", round(mean(sim_total$aggregate_cost[sim_total$aggregate_cost > quantile(sim_total$aggregate_cost, 0.99)]),0), "\n")
+cat("TVaR 99.95%:          ", round(mean(sim_total$aggregate_cost[sim_total$aggregate_cost > quantile(sim_total$aggregate_cost, 0.9995)]),0), "\n")
+
+# Net Revenue 
+cat("\n--- Net Revenue ---\n")
+cat("Mean Net Revenue:    ", round(mean(sim_total$net_revenue),0), "\n")
+cat("SD Net Revenue:      ", round(sd(sim_total$net_revenue),0), "\n")
+cat("Median:              ", round(median(sim_total$net_revenue),0), "\n")
+cat("50%:                 ", round(quantile(sim_total$net_revenue, 0.50),0), "\n")
+cat("90%:                 ", round(quantile(sim_total$net_revenue, 0.10),0), "\n")
+cat("95%:                 ", round(quantile(sim_total$net_revenue, 0.05),0), "\n")
+cat("99%:                 ", round(quantile(sim_total$net_revenue, 0.01),0), "\n")
+cat("99.95%:               ", round(quantile(sim_total$net_revenue, 0.0005),0), "\n")
+
+# Risk Metrics 
+cat("\n--- Risk Metrics ---\n")
+cat("Prob of Loss:        ", round(mean(sim_total$net_revenue < 0) * 100, 4), "%\n")
+cat("Mean Loss Ratio:     ", round(mean(sim_total$loss_ratio) * 100, 2),     "%\n")
+cat("Median Loss Ratio:   ", round(median(sim_total$loss_ratio) * 100, 2),   "%\n")
+
+# High Value Segment 
+cat("\n--- High Value Segment (Gold & Platinum) ---\n")
+cat("Mean Aggregate Loss: ", round(mean(sim_high$aggregate_cost),0), "\n")
+cat("Mean Net Revenue:    ", round(mean(sim_high$net_revenue),0), "\n")
+cat("Prob of Loss:        ", round(mean(sim_high$net_revenue < 0) * 100, 4), "%\n")
+
+# Standard Segment 
+cat("\n--- Standard Segment ---\n")
+cat("Mean Aggregate Loss: ", round(mean(sim_std$aggregate_cost), 0), "\n")
+cat("Mean Net Revenue:    ", round(mean(sim_std$net_revenue),0), "\n")
+cat("Prob of Loss:        ", round(mean(sim_std$net_revenue < 0) * 100, 4), "%\n")
+
+# Sanity Check 
+cat("\n--- Sanity Check ---\n")
+cat("High + Std Mean Loss:  ", round(mean(sim_high$aggregate_cost) + mean(sim_std$aggregate_cost),0), "\n")
+cat("Total Mean Loss:       ", round(mean(sim_total$aggregate_cost),0), "\n")
+cat("Match:                 ", round(mean(sim_high$aggregate_cost) + mean(sim_std$aggregate_cost), 0) == round(mean(sim_total$aggregate_cost), 0),"\n")
+```
+# PLOT SIMULATION DISTRIBUTIONS
+```{r}
+par(mfrow = c(1, 3))
+
+hist(sim_total$aggregate_cost,
+     breaks = 50,
+     main   = "Aggregate Cost Distribution",
+     xlab   = "Aggregate Cost",
+     col    = "steelblue")
+
+hist(sim_total$revenue,
+     breaks = 30,
+     main   = "Revenue Distribution",
+     xlab   = "Revenue",
+     col    = "goldenrod")
+
+hist(sim_total$net_revenue,
+     breaks = 50,
+     main   = "Net Revenue Distribution",
+     xlab   = "Net Revenue",
+     col    = "seagreen")
+```
+
+# LOADING SENSITIVITY ANALYSIS 
+```{r}
+set.seed(123)
+
+loadings <- c(0.10, 0.20, 0.30, 0.40, 0.50)
+
+loading_results <- do.call(rbind, lapply(loadings, function(l) {
+  
+  sim_high_l <- simulate_segment(
+    freq_pred   = nb_high$freq_pred,
+    sev_pred    = nb_high$sev_pred,
+    theta       = theta,
+    gamma_shape = gamma_shape,
+    loading     = l,
+    n_sim       = 10000
+  )
+  
+  sim_std_l <- simulate_segment(
+    freq_pred   = nb_std$freq_pred,
+    sev_pred    = nb_std$sev_pred,
+    theta       = theta,
+    gamma_shape = gamma_shape,
+    loading     = l,
+    n_sim       = 10000
+  )
+  
+  sim_total_l <- data.frame(
+    aggregate_cost = sim_high_l$aggregate_cost + sim_std_l$aggregate_cost,
+    revenue        = sim_high_l$revenue + sim_std_l$revenue,
+    net_revenue    = sim_high_l$net_revenue + sim_std_l$net_revenue,
+    loss_ratio     = (sim_high_l$aggregate_cost + sim_std_l$aggregate_cost) /
+                     (sim_high_l$revenue + sim_std_l$revenue)
+  )
+  
+  data.frame(
+    Loading           = paste0(l * 100, "%"),
+    Mean_Revenue      = round(mean(sim_total_l$revenue), 0),
+    Mean_Cost         = round(mean(sim_total_l$aggregate_cost), 0),
+    Mean_NetRevenue   = round(mean(sim_total_l$net_revenue), 0),
+    Prob_Loss         = round(mean(sim_total_l$net_revenue < 0), 4),
+    Mean_LossRatio    = round(mean(sim_total_l$loss_ratio), 4),
+    VaR99_Cost        = round(quantile(sim_total_l$aggregate_cost, 0.99), 0),
+    TVaR99_Cost       = round(mean(sim_total_l$aggregate_cost[
+                          sim_total_l$aggregate_cost >
+                          quantile(sim_total_l$aggregate_cost, 0.99)]), 0),
+    VaR99_NetRevenue  = round(quantile(sim_total_l$net_revenue, 0.01), 0)
+  )
+}))
+
+print(loading_results)
+```
+
+# Long Term Simulation
+# Economic assumptions 
+```{r}
+avg_inflation <- 0.025   # 2.5%
+avg_discount  <- 0.018   # 1.8%
+
+cat("Inflation rate:", round(avg_inflation * 100, 2), "%\n")
+cat("Discount rate:",  round(avg_discount  * 100, 2), "%\n")
+```
+
+# Fleet growth assumptions
+```{r}
+# solar growth assumptions 
+annual_growth_helionis <- (1 + 0.25)^(1/10) - 1
+annual_growth_bayesia  <- (1 + 0.25)^(1/10) - 1
+annual_growth_oryn     <- (1 + 0.15)^(1/10) - 1
+
+# solar sizes 
+base_helionis <- 1160
+base_bayesia  <- 1128
+base_oryn     <- 774
+```
+
+# container proportion
+```{r}
+prop_helionis <- c(
+  DeepSpace    = 58/1160,
+  DockArc      = 116/1160,
+  HardSeal     = 580/1160,
+  LongHaul     = 232/1160,
+  QuantumCrate = 174/1160
+)
+
+prop_bayesia <- c(
+  DeepSpace    = 56/1128,
+  DockArc      = 113/1128,
+  HardSeal     = 564/1128,
+  LongHaul     = 226/1128,
+  QuantumCrate = 169/1128
+)
+
+prop_oryn <- c(
+  DeepSpace    = 39/774,
+  DockArc      = 77/774,
+  HardSeal     = 387/774,
+  LongHaul     = 155/774,
+  QuantumCrate = 116/774
+)
+```
+
+# Long term NB Generator
+Assumption: The proportion of each container type remains constant as the fleet grows
+```{r}
+make_nb_data_cargo_lt <- function(df_freq, df_sev,
+                                  n_helionis, n_bayesia, n_oryn,
+                                  prop_helionis, prop_bayesia, prop_oryn) {
+  
+  total_n <- n_helionis + n_bayesia + n_oryn
+  
+  # Build container mixyup 
+  container_helionis <- c(
+    rep("DeepSpace Haulbox",       round(prop_helionis["DeepSpace"]    * n_helionis)),
+    rep("DockArc Freight Case",    round(prop_helionis["DockArc"]      * n_helionis)),
+    rep("HardSeal Transit Crate",  round(prop_helionis["HardSeal"]     * n_helionis)),
+    rep("LongHaul Vault Canister", round(prop_helionis["LongHaul"]     * n_helionis)),
+    rep("QuantumCrate Module",     round(prop_helionis["QuantumCrate"] * n_helionis))
+  )
+  
+  container_bayesia <- c(
+    rep("DeepSpace Haulbox",       round(prop_bayesia["DeepSpace"]    * n_bayesia)),
+    rep("DockArc Freight Case",    round(prop_bayesia["DockArc"]      * n_bayesia)),
+    rep("HardSeal Transit Crate",  round(prop_bayesia["HardSeal"]     * n_bayesia)),
+    rep("LongHaul Vault Canister", round(prop_bayesia["LongHaul"]     * n_bayesia)),
+    rep("QuantumCrate Module",     round(prop_bayesia["QuantumCrate"] * n_bayesia))
+  )
+  
+  container_oryn <- c(
+    rep("DeepSpace Haulbox",       round(prop_oryn["DeepSpace"]    * n_oryn)),
+    rep("DockArc Freight Case",    round(prop_oryn["DockArc"]      * n_oryn)),
+    rep("HardSeal Transit Crate",  round(prop_oryn["HardSeal"]     * n_oryn)),
+    rep("LongHaul Vault Canister", round(prop_oryn["LongHaul"]     * n_oryn)),
+    rep("QuantumCrate Module",     round(prop_oryn["QuantumCrate"] * n_oryn))
+  )
+  
+  all_containers <- c(container_helionis, container_bayesia, container_oryn)
+  
+  # Trim for rounding mismatch 
+  if (length(all_containers) > total_n) {
+    all_containers <- all_containers[1:total_n]
+  } else if (length(all_containers) < total_n) {
+    all_containers <- c(all_containers,
+                        rep("HardSeal Transit Crate", total_n - length(all_containers)))
+  }
+  
+  # Row-based bootstrap from historical severity data
+  sampled_rows <- df_sev[sample(seq_len(nrow(df_sev)), total_n, replace = TRUE), ]
+  
+  nb_data <- data.frame(
+    cargo_value      = sampled_rows$cargo_value,
+    pilot_experience = sampled_rows$pilot_experience,
+    route_risk       = sampled_rows$route_risk,
+    cargo_type       = sampled_rows$cargo_type,
+    weight           = sampled_rows$weight,
+    solar_radiation  = sampled_rows$solar_radiation,
+    debris_density   = sampled_rows$debris_density,
+    exposure         = 1
+  )
+  
+  nb_data$container_type <- factor(
+    all_containers,
+    levels = levels(df_freq$container_type)
+  )
+  
+  nb_data$cargo_type <- factor(nb_data$cargo_type,
+                               levels = levels(df_freq$cargo_type))
+  
+  nb_data$route_risk <- factor(nb_data$route_risk,
+                               levels = levels(df_freq$route_risk),
+                               ordered = TRUE)
+  
+  nb_data$solar_system <- c(
+    rep("Helionis Cluster", n_helionis),
+    rep("Bayesia System",   n_bayesia),
+    rep("Oryn Delta",       n_oryn)
+  )
+  
+   # Cap weight by container type capacity 
+  container_max_weight <- c(
+    "DeepSpace Haulbox"       = 25000,
+    "DockArc Freight Case"    = 50000,
+    "HardSeal Transit Crate"  = 100000,
+    "LongHaul Vault Canister" = 150000,
+    "QuantumCrate Module"     = 250000
+  )
+  
+  nb_data <- nb_data %>%
+    mutate(
+      weight = pmin(weight,
+                    container_max_weight[as.character(container_type)])
+    )
+  
+  nb_data
+}
+```
+
+# Parameters 
+```{r}
+set.seed(123)
+
+n_sim   <- 100000
+n_years <- 10
+loading <- 0.40
+
+theta       <- model_cargo_freq3$theta
+gamma_disp  <- summary(model_cargo_sev2)$dispersion
+gamma_shape <- 1 / gamma_disp
+```
+
+# Pre-build all 10 years of new business data
+```{r}
+cat("Building new business data for all 10 years...\n")
+
+yearly_nb_data <- list()
+
+for (yr in 1:n_years) {
+  
+  cat("  Building year", yr, "data...\n")
+  
+  # Fleet size this year
+  n_hel <- round(base_helionis * (1 + annual_growth_helionis)^yr)
+  n_bay <- round(base_bayesia  * (1 + annual_growth_bayesia)^yr)
+  n_ory <- round(base_oryn     * (1 + annual_growth_oryn)^yr)
+  
+  # Generate portfolio
+  nb_data_yr <- make_nb_data_cargo_lt(
+    df_freq       = df_cargo_freq,
+    df_sev        = df_cargo_sev,
+    n_helionis    = n_hel,
+    n_bayesia     = n_bay,
+    n_oryn        = n_ory,
+    prop_helionis = prop_helionis,
+    prop_bayesia  = prop_bayesia,
+    prop_oryn     = prop_oryn
+  )
+  
+  # Predictions
+  nb_data_yr$freq_pred <- predict(model_cargo_freq3,
+                                  newdata = nb_data_yr,
+                                  type    = "response")
+  nb_data_yr$sev_pred  <- predict(model_cargo_sev2,
+                                  newdata = nb_data_yr,
+                                  type    = "response")
+  
+  # Apply inflation to severity
+  inflation_factor     <- (1 + avg_inflation)^yr
+  nb_data_yr$sev_pred  <- nb_data_yr$sev_pred * inflation_factor
+  
+  # Discount factor
+  discount_factor <- 1 / (1 + avg_discount)^yr
+  
+  # Pre-calculate annual earnings (fixed premium)
+  annual_earnings <- sum(nb_data_yr$freq_pred * nb_data_yr$sev_pred) * (1 + loading)
+  
+  # Store
+  yearly_nb_data[[yr]] <- list(
+    nb_data          = nb_data_yr,
+    n_exposures      = nrow(nb_data_yr),
+    inflation_factor = inflation_factor,
+    discount_factor  = discount_factor,
+    annual_earnings  = annual_earnings
+  )
+}
+
+cat("All 10 years data built! Now running joint simulation...\n")
+```
+
+# Joint 10-year simulation
+```{r}
+joint_sim <- data.frame(
+  total_cost        = numeric(n_sim),
+  total_revenue     = numeric(n_sim),
+  total_netrev      = numeric(n_sim),
+  pv_total_cost     = numeric(n_sim),
+  pv_total_revenue  = numeric(n_sim),
+  pv_total_netrev   = numeric(n_sim)
+)
+
+cat("Running", n_sim, "joint simulations...\n")
+
+for (i in 1:n_sim) {
+  
+  if (i %% 10000 == 0) cat("  Simulation run", i, "of", n_sim, "...\n")
+  
+  run_total_cost       <- 0
+  run_total_revenue    <- 0
+  run_total_netrev     <- 0
+  run_pv_total_cost    <- 0
+  run_pv_total_revenue <- 0
+  run_pv_total_netrev  <- 0
+  
+  for (yr in 1:n_years) {
+    
+    pred_freq_yr    <- yearly_nb_data[[yr]]$nb_data$freq_pred
+    pred_sev_yr     <- yearly_nb_data[[yr]]$nb_data$sev_pred
+    annual_earnings <- yearly_nb_data[[yr]]$annual_earnings
+    discount_factor <- yearly_nb_data[[yr]]$discount_factor
+    n_policies_yr   <- yearly_nb_data[[yr]]$n_exposures
+    
+    # Simulate claim counts — NB for cargo
+    claim_counts <- rnbinom(n_policies_yr,
+                            mu   = pred_freq_yr,
+                            size = theta)
+    
+    yr_total_loss <- 0
+    for (j in 1:n_policies_yr) {
+      if (claim_counts[j] > 0) {
+        gamma_rate    <- gamma_shape / pred_sev_yr[j]
+        claims        <- rgamma(claim_counts[j],
+                                shape = gamma_shape,
+                                rate  = gamma_rate)
+        yr_total_loss <- yr_total_loss + sum(claims)
+      }
+    }
+    
+    yr_netrev <- annual_earnings - yr_total_loss
+    
+    # Accumulate nominal
+    run_total_cost    <- run_total_cost    + yr_total_loss
+    run_total_revenue <- run_total_revenue + annual_earnings
+    run_total_netrev  <- run_total_netrev  + yr_netrev
+    
+    # Accumulate PV
+    run_pv_total_cost    <- run_pv_total_cost    + yr_total_loss   * discount_factor
+    run_pv_total_revenue <- run_pv_total_revenue + annual_earnings * discount_factor
+    run_pv_total_netrev  <- run_pv_total_netrev  + yr_netrev       * discount_factor
+  }
+  
+  joint_sim$total_cost[i]       <- run_total_cost
+  joint_sim$total_revenue[i]    <- run_total_revenue
+  joint_sim$total_netrev[i]     <- run_total_netrev
+  joint_sim$pv_total_cost[i]    <- run_pv_total_cost
+  joint_sim$pv_total_revenue[i] <- run_pv_total_revenue
+  joint_sim$pv_total_netrev[i]  <- run_pv_total_netrev
+}
+
+cat("Joint simulation complete!\n")
+```
+
+# Results output
+```{r}
+cat("\n=== LONG TERM CARGO — JOINT SIMULATION RESULTS ===\n")
+cat("Number of simulations:", n_sim, "\n")
+cat("Number of years:      ", n_years, "\n")
+cat("Loading:               40%\n")
+
+# Average and total fleet size
+avg_fleet  <- round(mean(sapply(yearly_nb_data, function(x) x$n_exposures)), 0)
+total_fleet <- round(sum(sapply(yearly_nb_data, function(x) x$n_exposures)), 0)
+
+cat("Average Annual Fleet Size:", avg_fleet, "\n")
+cat("Total Fleet Size (10 yr): ", total_fleet, "\n")
+
+# NOMINAL
+cat("\n=== NOMINAL (Future Value) ===\n")
+
+cat("\n--- Aggregate Loss ---\n")
+cat("Mean:     ", round(mean(joint_sim$total_cost),              0), "\n")
+cat("Median:   ", round(median(joint_sim$total_cost),            0), "\n")
+cat("StdDev:   ", round(sd(joint_sim$total_cost),                0), "\n")
+cat("50%:      ", round(quantile(joint_sim$total_cost, 0.50),    0), "\n")
+cat("90%:      ", round(quantile(joint_sim$total_cost, 0.90),    0), "\n")
+cat("95%:      ", round(quantile(joint_sim$total_cost, 0.95),    0), "\n")
+cat("99%:      ", round(quantile(joint_sim$total_cost, 0.99),    0), "\n")
+cat("99.95%:    ", round(quantile(joint_sim$total_cost, 0.9995),   0), "\n")
+cat("TVaR 99%: ", round(mean(joint_sim$total_cost[
+                  joint_sim$total_cost >
+                  quantile(joint_sim$total_cost, 0.99)]),         0), "\n")
+cat("TVaR 99.95%:", round(mean(joint_sim$total_cost[
+                  joint_sim$total_cost >
+                  quantile(joint_sim$total_cost, 0.9995)]),        0), "\n")
+
+cat("\n--- Revenue (Premium) ---\n")
+cat("Mean:     ", round(mean(joint_sim$total_revenue),           0), "\n")
+cat("Median:   ", round(median(joint_sim$total_revenue),         0), "\n")
+
+cat("\n--- Net Revenue ---\n")
+cat("Mean:     ", round(mean(joint_sim$total_netrev),              0), "\n")
+cat("Median:   ", round(median(joint_sim$total_netrev),            0), "\n")
+cat("StdDev:   ", round(sd(joint_sim$total_netrev),                0), "\n")
+cat("50%:      ", round(quantile(joint_sim$total_netrev, 0.50),    0), "\n")
+cat("90%:      ", round(quantile(joint_sim$total_netrev, 0.10),    0), "\n")
+cat("95%:      ", round(quantile(joint_sim$total_netrev, 0.05),    0), "\n")
+cat("99%:      ", round(quantile(joint_sim$total_netrev, 0.01),    0), "\n")
+cat("99.95%:    ", round(quantile(joint_sim$total_netrev, 0.0005),   0), "\n")
+cat("Prob of Loss: ", round(mean(joint_sim$total_netrev < 0), 4),  "\n")
+
+# PRESENT VALUE 
+cat("\n=== PRESENT VALUE (Today's Dollars) ===\n")
+
+cat("\n--- PV Aggregate Loss ---\n")
+cat("Mean:     ", round(mean(joint_sim$pv_total_cost),              0), "\n")
+cat("Median:   ", round(median(joint_sim$pv_total_cost),            0), "\n")
+cat("StdDev:   ", round(sd(joint_sim$pv_total_cost),                0), "\n")
+cat("50%:      ", round(quantile(joint_sim$pv_total_cost, 0.50),    0), "\n")
+cat("90%:      ", round(quantile(joint_sim$pv_total_cost, 0.90),    0), "\n")
+cat("95%:      ", round(quantile(joint_sim$pv_total_cost, 0.95),    0), "\n")
+cat("99%:      ", round(quantile(joint_sim$pv_total_cost, 0.99),    0), "\n")
+cat("99.95%:    ", round(quantile(joint_sim$pv_total_cost, 0.9995),   0), "\n")
+cat("TVaR 99%: ", round(mean(joint_sim$pv_total_cost[
+                  joint_sim$pv_total_cost >
+                  quantile(joint_sim$pv_total_cost, 0.99)]),         0), "\n")
+cat("TVaR 99.95%:", round(mean(joint_sim$pv_total_cost[
+                  joint_sim$pv_total_cost >
+                  quantile(joint_sim$pv_total_cost, 0.9995)]),        0), "\n")
+
+cat("\n--- PV Revenue (Premium) ---\n")
+cat("Mean:     ", round(mean(joint_sim$pv_total_revenue),           0), "\n")
+cat("Median:   ", round(median(joint_sim$pv_total_revenue),         0), "\n")
+
+cat("\n--- PV Net Revenue ---\n")
+cat("Mean:     ", round(mean(joint_sim$pv_total_netrev),              0), "\n")
+cat("Median:   ", round(median(joint_sim$pv_total_netrev),            0), "\n")
+cat("StdDev:   ", round(sd(joint_sim$pv_total_netrev),                0), "\n")
+cat("50%:      ", round(quantile(joint_sim$pv_total_netrev, 0.50),    0), "\n")
+cat("90%:      ", round(quantile(joint_sim$pv_total_netrev, 0.10),    0), "\n")
+cat("95%:      ", round(quantile(joint_sim$pv_total_netrev, 0.05),    0), "\n")
+cat("99%:      ", round(quantile(joint_sim$pv_total_netrev, 0.01),    0), "\n")
+cat("99.95%:    ", round(quantile(joint_sim$pv_total_netrev, 0.0005),   0), "\n")
+cat("Prob of Loss: ", round(mean(joint_sim$pv_total_netrev < 0), 4),  "\n")
+
+# FOR TABLE USE
+cat("\n=== FOR TABLE ===\n")
+
+cat("\n--- NOMINAL ---\n")
+cat("Risk Count:  ", round(mean(sapply(yearly_nb_data,
+                    function(x) x$n_exposures)), 0), "\n")
+cat("Loading:      40%\n")
+cat("Premium:     ", round(mean(joint_sim$total_revenue),         0), "\n")
+cat("\nAggregate Loss:\n")
+cat("  Mean:      ", round(mean(joint_sim$total_cost),            0), "\n")
+cat("  50%:       ", round(quantile(joint_sim$total_cost, 0.50),  0), "\n")
+cat("  90%:       ", round(quantile(joint_sim$total_cost, 0.90),  0), "\n")
+cat("  95%:       ", round(quantile(joint_sim$total_cost, 0.95),  0), "\n")
+cat("  99%:       ", round(quantile(joint_sim$total_cost, 0.99),  0), "\n")
+cat("  99.95%:     ", round(quantile(joint_sim$total_cost, 0.9995), 0), "\n")
+cat("\nNet Revenue:\n")
+cat("  Mean:      ", round(mean(joint_sim$total_netrev),            0), "\n")
+cat("  50%:       ", round(quantile(joint_sim$total_netrev, 0.50),  0), "\n")
+cat("  90%:       ", round(quantile(joint_sim$total_netrev, 0.10),  0), "\n")
+cat("  95%:       ", round(quantile(joint_sim$total_netrev, 0.05),  0), "\n")
+cat("  99%:       ", round(quantile(joint_sim$total_netrev, 0.01),  0), "\n")
+cat("  99.95%:     ", round(quantile(joint_sim$total_netrev, 0.0005), 0), "\n")
+cat("Prob of Loss:", round(mean(joint_sim$total_netrev < 0), 4),    "\n")
+
+cat("\n--- PRESENT VALUE ---\n")
+cat("PV Premium:  ", round(mean(joint_sim$pv_total_revenue),         0), "\n")
+cat("\nPV Aggregate Loss:\n")
+cat("  Mean:      ", round(mean(joint_sim$pv_total_cost),            0), "\n")
+cat("  50%:       ", round(quantile(joint_sim$pv_total_cost, 0.50),  0), "\n")
+cat("  90%:       ", round(quantile(joint_sim$pv_total_cost, 0.90),  0), "\n")
+cat("  95%:       ", round(quantile(joint_sim$pv_total_cost, 0.95),  0), "\n")
+cat("  99%:       ", round(quantile(joint_sim$pv_total_cost, 0.99),  0), "\n")
+cat("  99.95%:     ", round(quantile(joint_sim$pv_total_cost, 0.9995), 0), "\n")
+cat("\nPV Net Revenue:\n")
+cat("  Mean:      ", round(mean(joint_sim$pv_total_netrev),            0), "\n")
+cat("  50%:       ", round(quantile(joint_sim$pv_total_netrev, 0.50),  0), "\n")
+cat("  90%:       ", round(quantile(joint_sim$pv_total_netrev, 0.10),  0), "\n")
+cat("  95%:       ", round(quantile(joint_sim$pv_total_netrev, 0.05),  0), "\n")
+cat("  99%:       ", round(quantile(joint_sim$pv_total_netrev, 0.01),  0), "\n")
+cat("  99.95%:     ", round(quantile(joint_sim$pv_total_netrev, 0.0005), 0), "\n")
+cat("PV Prob of Loss:", round(mean(joint_sim$pv_total_netrev < 0), 4), "\n")
+```
+
+# Results output visualisation
+```{r}
+# Plots 
+par(mfrow = c(2, 2))
+
+# Plot 1: Nominal aggregate loss distribution
+hist(joint_sim$total_cost / 1e9,
+     breaks = 50,
+     main   = "10-Year Nominal Aggregate Loss",
+     xlab   = "Total Loss (Billions)",
+     col    = "steelblue",
+     border = "white")
+abline(v = mean(joint_sim$total_cost) / 1e9,
+       col = "blue", lwd = 2, lty = 2)
+abline(v = quantile(joint_sim$total_cost, 0.99) / 1e9,
+       col = "red", lwd = 2, lty = 2)
+abline(v = quantile(joint_sim$total_cost, 0.995) / 1e9,
+       col = "darkred", lwd = 2, lty = 2)
+legend("topright",
+       legend = c("Mean", "VaR 99%", "VaR 99.5%"),
+       col    = c("blue", "red", "darkred"),
+       lty = 2, lwd = 2, cex = 0.8)
+
+# Plot 2: Nominal net revenue distribution
+hist(joint_sim$total_netrev / 1e9,
+     breaks = 50,
+     main   = "10-Year Nominal Net Revenue",
+     xlab   = "Net Revenue (Billions)",
+     col    = "seagreen",
+     border = "white")
+abline(v = mean(joint_sim$total_netrev) / 1e9,
+       col = "darkgreen", lwd = 2, lty = 2)
+abline(v = 0,
+       col = "black", lwd = 2, lty = 1)
+legend("topright",
+       legend = c("Mean", "Break Even"),
+       col    = c("darkgreen", "black"),
+       lty    = c(2, 1), lwd = 2, cex = 0.8)
+
+# Plot 3: PV aggregate loss distribution
+hist(joint_sim$pv_total_cost / 1e9,
+     breaks = 50,
+     main   = "10-Year PV Aggregate Loss",
+     xlab   = "PV Total Loss (Billions)",
+     col    = "tomato",
+     border = "white")
+abline(v = mean(joint_sim$pv_total_cost) / 1e9,
+       col = "red", lwd = 2, lty = 2)
+abline(v = quantile(joint_sim$pv_total_cost, 0.99) / 1e9,
+       col = "darkred", lwd = 2, lty = 2)
+legend("topright",
+       legend = c("Mean", "VaR 99%"),
+       col    = c("red", "darkred"),
+       lty = 2, lwd = 2, cex = 0.8)
+
+# Plot 4: PV net revenue distribution
+hist(joint_sim$pv_total_netrev / 1e9,
+     breaks = 50,
+     main   = "10-Year PV Net Revenue",
+     xlab   = "PV Net Revenue (Billions)",
+     col    = "goldenrod",
+     border = "white")
+abline(v = mean(joint_sim$pv_total_netrev) / 1e9,
+       col = "darkgoldenrod", lwd = 2, lty = 2)
+abline(v = 0,
+       col = "black", lwd = 2, lty = 1)
+legend("topright",
+       legend = c("Mean", "Break Even"),
+       col    = c("darkgoldenrod", "black"),
+       lty    = c(2, 1), lwd = 2, cex = 0.8)
+```
+
+# Stress Testing for short term
+# PARAMETERS
+```{r}
+set.seed(123)
+
+# Parameters 
+loading <- 0.40
+n_sim   <- 100000
+
+# Segment flag 
+nb_data_cargo$segment <- ifelse(
+  nb_data_cargo$cargo_type %in% c("gold", "platinum"),
+  "high_value",
+  "standard"
+)
+
+nb_high <- subset(nb_data_cargo, segment == "high_value")
+nb_std  <- subset(nb_data_cargo, segment == "standard")
+
+# Model parameters 
+theta       <- model_cargo_freq3$theta
+gamma_disp  <- summary(model_cargo_sev2)$dispersion
+gamma_shape <- 1 / gamma_disp
+```
+
+# BASE PREM SETUP
+```{r}
+base_freq_high <- nb_high$freq_pred
+base_sev_high  <- nb_high$sev_pred
+
+base_freq_std  <- nb_std$freq_pred
+base_sev_std   <- nb_std$sev_pred
+
+base_premium_high <- sum(base_freq_high * base_sev_high) * (1 + loading)
+base_premium_std  <- sum(base_freq_std  * base_sev_std)  * (1 + loading)
+base_premium_total <- base_premium_high + base_premium_std
+```
+
+# SIMULATION FUNCTION WITH FIXED PREMIUM
+```{r}
+simulate_segment_fixed_premium <- function(freq_pred, sev_pred, theta, gamma_shape,
+                                           fixed_premium, n_sim) {
+  
+  n_units <- length(freq_pred)
+  
+  results <- data.frame(
+    aggregate_cost = numeric(n_sim),
+    revenue        = rep(fixed_premium, n_sim),
+    net_revenue    = numeric(n_sim),
+    loss_ratio     = numeric(n_sim)
+  )
+  
+  for (i in 1:n_sim) {
+    
+    claim_counts <- rnbinom(n_units, mu = freq_pred, size = theta)
+    total_loss <- 0
+    
+    for (j in 1:n_units) {
+      if (claim_counts[j] > 0) {
+        gamma_rate <- gamma_shape / sev_pred[j]
+        claims <- rgamma(claim_counts[j], shape = gamma_shape, rate = gamma_rate)
+        total_loss <- total_loss + sum(claims)
+      }
+    }
+    
+    results$aggregate_cost[i] <- total_loss
+    results$net_revenue[i]    <- fixed_premium - total_loss
+    results$loss_ratio[i]     <- total_loss / fixed_premium
+  }
+  
+  return(results)
+}
+```
+
+# STRESS-TEST WRAPPER
+```{r}
+run_cargo_stress_1yr <- function(freq_stress = 1.00,
+                                 sev_stress  = 1.00,
+                                 scenario_name = "Base") {
+  
+  # Apply stress to predicted outputs
+  stressed_freq_high <- base_freq_high * freq_stress
+  stressed_sev_high  <- base_sev_high  * sev_stress
+  
+  stressed_freq_std  <- base_freq_std * freq_stress
+  stressed_sev_std   <- base_sev_std  * sev_stress
+  
+  # Simulate each segment with FIXED base premium
+  sim_high <- simulate_segment_fixed_premium(
+    freq_pred     = stressed_freq_high,
+    sev_pred      = stressed_sev_high,
+    theta         = theta,
+    gamma_shape   = gamma_shape,
+    fixed_premium = base_premium_high,
+    n_sim         = n_sim
+  )
+  
+  sim_std <- simulate_segment_fixed_premium(
+    freq_pred     = stressed_freq_std,
+    sev_pred      = stressed_sev_std,
+    theta         = theta,
+    gamma_shape   = gamma_shape,
+    fixed_premium = base_premium_std,
+    n_sim         = n_sim
+  )
+  
+  # Combine segment results into total portfolio
+  sim_total <- data.frame(
+    aggregate_cost = sim_high$aggregate_cost + sim_std$aggregate_cost,
+    revenue        = sim_high$revenue + sim_std$revenue,
+    net_revenue    = sim_high$net_revenue + sim_std$net_revenue,
+    loss_ratio     = (sim_high$aggregate_cost + sim_std$aggregate_cost) /
+                     (sim_high$revenue + sim_std$revenue)
+  )
+  
+  # Tail metrics — cost side
+  var50_loss  <- as.numeric(quantile(sim_total$aggregate_cost, 0.50))
+  var90_loss  <- as.numeric(quantile(sim_total$aggregate_cost, 0.90))
+  var95_loss  <- as.numeric(quantile(sim_total$aggregate_cost, 0.95))
+  var99_loss  <- as.numeric(quantile(sim_total$aggregate_cost, 0.99))
+  var995_loss <- as.numeric(quantile(sim_total$aggregate_cost, 0.9995))
+  
+  tvar95_loss  <- mean(sim_total$aggregate_cost[sim_total$aggregate_cost > var95_loss])
+  tvar99_loss  <- mean(sim_total$aggregate_cost[sim_total$aggregate_cost > var99_loss])
+  tvar995_loss <- mean(sim_total$aggregate_cost[sim_total$aggregate_cost > var995_loss])
+  
+  # Net revenue percentiles — left tail (worst outcomes)
+  profit_50  <- as.numeric(quantile(sim_total$net_revenue, 0.50))
+  profit_90  <- as.numeric(quantile(sim_total$net_revenue, 0.10))
+  profit_95  <- as.numeric(quantile(sim_total$net_revenue, 0.05))
+  profit_99  <- as.numeric(quantile(sim_total$net_revenue, 0.01))
+  profit_995 <- as.numeric(quantile(sim_total$net_revenue, 0.0005))
+  
+  data.frame(
+    Scenario              = scenario_name,
+    N_Exposures           = nrow(nb_data_cargo),
+    Fixed_Premium_Revenue = base_premium_total,
+    Mean_Aggregate_Loss   = mean(sim_total$aggregate_cost),
+    SD_Aggregate_Loss     = sd(sim_total$aggregate_cost),
+    Mean_Net_Revenue      = mean(sim_total$net_revenue),
+    SD_Net_Revenue        = sd(sim_total$net_revenue),
+    Prob_Loss             = mean(sim_total$net_revenue < 0),
+    Mean_Loss_Ratio       = mean(sim_total$loss_ratio),
+    VaR_50_Loss           = var50_loss,
+    VaR_90_Loss           = var90_loss,
+    VaR_95_Loss           = var95_loss,
+    VaR_99_Loss           = var99_loss,
+    VaR_99_5_Loss         = var995_loss,
+    TVaR_95_Loss          = tvar95_loss,
+    TVaR_99_Loss          = tvar99_loss,
+    TVaR_99_5_Loss        = tvar995_loss,
+    Profit_50             = profit_50,
+    Profit_90             = profit_90,
+    Profit_95             = profit_95,
+    Profit_99             = profit_99,
+    Profit_99_5           = profit_995
+  )
+}
+```
+
+#  RUN STRESS SCENARIOS
+```{r}
+cargo_st_base <- run_cargo_stress_1yr(
+  freq_stress   = 1.00,
+  sev_stress    = 1.00,
+  scenario_name = "Base"
+)
+
+cargo_st_freq <- run_cargo_stress_1yr(
+  freq_stress   = 1.20,
+  sev_stress    = 1.00,
+  scenario_name = "Frequency +20%"
+)
+
+cargo_st_sev <- run_cargo_stress_1yr(
+  freq_stress   = 1.00,
+  sev_stress    = 1.20,
+  scenario_name = "Severity +20%"
+)
+
+cargo_st_combined <- run_cargo_stress_1yr(
+  freq_stress   = 1.20,
+  sev_stress    = 1.20,
+  scenario_name = "Freq +20% & Sev +20%"
+)
+```
+
+# OUTPUT RESULTS
+```{r}
+cargo_stress_1yr_summary <- dplyr::bind_rows(
+  cargo_st_base,
+  cargo_st_freq,
+  cargo_st_sev,
+  cargo_st_combined
+)
+```
+
+# DISPLAY RESULT
+```{r}
+
+cargo_stress_1yr_summary_print <- cargo_stress_1yr_summary
+
+# Round all numeric columns first
+cargo_stress_1yr_summary_print[, sapply(cargo_stress_1yr_summary_print, is.numeric)] <-
+  round(cargo_stress_1yr_summary_print[, sapply(cargo_stress_1yr_summary_print, is.numeric)], 0)
+
+# Then override ratios/probabilities with 4 decimals
+cargo_stress_1yr_summary_print$Mean_Loss_Ratio <- round(cargo_stress_1yr_summary$Mean_Loss_Ratio, 4)
+cargo_stress_1yr_summary_print$Prob_Loss       <- round(cargo_stress_1yr_summary$Prob_Loss, 4)
+
+cat("\n=== STRESS TEST RESULTS - CARGO SHORT TERM (1 YEAR) ===\n")
+cat("Base Premium Revenue:", round(base_premium_total, 0), "\n")
+cat("Number of Exposures:", nrow(nb_data_cargo), "\n")
+cat("Loading:", paste0(loading * 100, "%"), "\n\n")
+
+print(cargo_stress_1yr_summary_print)
+```
+
+# DISPLAY COST and REVENUE
+```{r}
+# Table 1: Cost  
+cost_table <- cargo_stress_1yr_summary %>%
+  dplyr::select(Scenario, N_Exposures, Fixed_Premium_Revenue,
+                Mean_Aggregate_Loss, VaR_50_Loss, VaR_90_Loss,
+                VaR_95_Loss, VaR_99_Loss, VaR_99_5_Loss,
+                TVaR_95_Loss, TVaR_99_Loss, TVaR_99_5_Loss)
+
+cat("\n=== COST METRICS ===\n")
+print(cost_table)
+
+# Table 2: Net revenue 
+revenue_table <- cargo_stress_1yr_summary %>%
+  dplyr::select(Scenario, Fixed_Premium_Revenue,
+                Mean_Net_Revenue, Profit_50, Profit_90,
+                Profit_95, Profit_99, Profit_99_5,
+                Prob_Loss, Mean_Loss_Ratio)
+
+cat("\n=== NET REVENUE METRICS ===\n")
+print(revenue_table)
+```
+
+# EXPORT AGGREGARE LOSS (SHORT TERM) FOR SCENARIO TESTING 
+```{r}
+#  Full results — all columns
+saveRDS(
+  sim_total,
+  file = paste0(bronze_path, "cargo_st_base_full.rds")
+)
+cat("Full results saved!\n")
+cat("Rows:", nrow(sim_total), "\n")
+cat("Cols:", ncol(sim_total), "\n")
+
+# Aaron's version — aggregate loss only 
+saveRDS(
+  sim_total$aggregate_cost,
+  file = paste0(bronze_path, "cargo_st_base_agg_loss.rds")
+)
+cat("Aggregate loss only saved!\n")
+cat("Length:", length(sim_total$aggregate_cost), "\n")
+```
+
+

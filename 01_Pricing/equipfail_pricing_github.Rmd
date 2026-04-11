@@ -1,0 +1,1553 @@
+---
+title: "GLM_EF_claim"
+output: html_document
+date: "2026-03-17"
+---
+
+```{r setup, include=FALSE}
+
+# install.packages("lme4")
+# install.packages("glmmTMB")
+# install.packages("kableExtra")
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(glmmTMB)
+library(kableExtra)
+library(MASS)
+
+bronze_path <- paste0(getwd(), '/Bronze/')
+
+ef_freq_model_clean <- read_csv(paste0(bronze_path, "ef_claim_freq_update.csv"))
+ef_sev_model_clean <- read_csv(paste0(bronze_path, "ef_claim_sev_update.csv"))
+```
+
+# CHECK DATA
+```{r}
+######## Range Checks — ef_freq_model_clean ########
+cat("=== FREQ TABLE RANGE CHECKS ===\n")
+# 1. claim_count (valid: 0-3)
+cat("claim_count:", min(ef_freq_model_clean$claim_count), "to", max(ef_freq_model_clean$claim_count), "\n")
+# 2. equipment_age (valid: 0-10)
+cat("equipment_age:", min(ef_freq_model_clean$equipment_age), "to", max(ef_freq_model_clean$equipment_age), "\n")
+# 3. maintenance_int (valid: 100-5000)
+cat("maintenance_int:", min(ef_freq_model_clean$maintenance_int), "to", max(ef_freq_model_clean$maintenance_int), "\n")
+# 4. usage_int (valid: 0-24)
+cat("usage_int:", min(ef_freq_model_clean$usage_int), "to", max(ef_freq_model_clean$usage_int), "\n")
+# 5. exposure (valid: 0-1)
+cat("exposure:", min(ef_freq_model_clean$exposure), "to", max(ef_freq_model_clean$exposure), "\n")
+# 6. solar_system (categorical)
+cat("solar_system unique values:", sort(unique(ef_freq_model_clean$solar_system)), "\n")
+# 7. equipment_type (categorical)
+cat("equipment_type unique values:", sort(unique(ef_freq_model_clean$equipment_type)), "\n")
+
+######## Range Checks — ef_sev_model_clean ########
+cat("\n=== SEV TABLE RANGE CHECKS ===\n")
+# 1. claim_amount (valid: ~11K-790K)
+cat("claim_amount:", min(ef_sev_model_clean$claim_amount), "to", max(ef_sev_model_clean$claim_amount), "\n")
+# 2. equipment_age (valid: 0-10)
+cat("equipment_age:", min(ef_sev_model_clean$equipment_age), "to", max(ef_sev_model_clean$equipment_age), "\n")
+# 3. maintenance_int (valid: 100-5000)
+cat("maintenance_int:", min(ef_sev_model_clean$maintenance_int), "to", max(ef_sev_model_clean$maintenance_int), "\n")
+# 4. usage_int (valid: 0-24)
+cat("usage_int:", min(ef_sev_model_clean$usage_int), "to", max(ef_sev_model_clean$usage_int), "\n")
+# 5. exposure (valid: 0-1)
+cat("exposure:", min(ef_sev_model_clean$exposure), "to", max(ef_sev_model_clean$exposure), "\n")
+# 6. solar_system (categorical)
+cat("solar_system unique values:", sort(unique(ef_sev_model_clean$solar_system)), "\n")
+# 7. equipment_type (categorical)
+cat("equipment_type unique values:", sort(unique(ef_sev_model_clean$equipment_type)), "\n")
+
+```
+
+# DATA FORMATING
+```{r}
+# Casting DF — Freq table
+df_ef_freq <- ef_freq_model_clean %>% mutate(
+    equipment_age   = as.numeric(equipment_age),
+    maintenance_int = as.numeric(maintenance_int),
+    usage_int       = as.numeric(usage_int),
+    exposure        = as.numeric(exposure),
+    claim_count     = as.numeric(claim_count),
+    equipment_type  = factor(equipment_type),
+    solar_system    = factor(solar_system)
+  ) %>%
+  filter(!is.na(claim_count), exposure > 0)
+
+# Casting DF — Sev table
+df_ef_sev <- ef_sev_model_clean %>% mutate(
+    equipment_age   = as.numeric(equipment_age),
+    maintenance_int = as.numeric(maintenance_int),
+    usage_int       = as.numeric(usage_int),
+    exposure        = as.numeric(exposure),
+    claim_amount    = as.numeric(claim_amount),
+    equipment_type  = factor(equipment_type),
+    solar_system    = factor(solar_system)
+  ) %>%
+  filter(!is.na(claim_amount), claim_amount > 0)
+
+# Verify
+nrow(df_ef_freq)
+nrow(df_ef_sev)
+glimpse(df_ef_freq)
+```
+
+# FREQ GLM FIT
+```{r}
+freq_model_ef <- glm(
+  claim_count ~ equipment_type + equipment_age + solar_system + maintenance_int + usage_int,
+          data   = df_ef_freq,
+          family = poisson(link = "log"),
+          offset = log(exposure))
+
+summary(freq_model_ef)
+```
+
+# SEV GLM FIT
+```{r}
+# Severity Model — Gamma GLM 
+sev_model_ef1 <- glm(claim_amount ~ equipment_type + solar_system + equipment_age + maintenance_int + usage_int,
+  data   = df_ef_sev,
+  family = Gamma(link = "log"))
+
+summary(sev_model_ef1)
+```
+# TRIMMED SEV GLM FIT
+```{r}
+sev_model_ef <- glm(claim_amount ~ equipment_type + solar_system + equipment_age + usage_int,
+  data   = df_ef_sev,
+  family = Gamma(link = "log"))
+
+summary(sev_model_ef)
+
+```
+Based on the description and the coefficient mapping for sev and fre: mapping assumption: Epsilon = Bayesia, Zeta = Oryn Delta (refer explaination)
+
+# REMAP SOLAR SYSTEM
+```{r}
+df_ef_freq_remapped <- df_ef_freq %>% mutate(solar_system = 
+    case_when(
+      solar_system == "Epsilon"          ~ "Bayesia System",
+      solar_system == "Zeta"             ~ "Oryn Delta",
+      solar_system == "Helionis Cluster" ~ "Helionis Cluster",
+      TRUE ~ solar_system),
+      
+    solar_system = factor(solar_system,
+                          levels = c("Helionis Cluster", "Bayesia System", "Oryn Delta")))
+
+df_ef_sev_remapped <- df_ef_sev %>% mutate(solar_system = 
+    case_when(
+      solar_system == "Epsilon"          ~ "Bayesia System",
+      solar_system == "Zeta"             ~ "Oryn Delta",
+      solar_system == "Helionis Cluster" ~ "Helionis Cluster",
+      TRUE ~ solar_system),
+      
+    solar_system = factor(solar_system,
+                          levels = c("Helionis Cluster", "Bayesia System", "Oryn Delta")))
+
+# sense check
+cat("FREQ remapped solar_system")
+print(table(df_ef_freq_remapped$solar_system))
+cat("ORIGINAL freq solar_system (unchanged)")
+print(table(df_ef_freq$solar_system))
+cat("SEV remapped solar_system")
+print(table(df_ef_sev_remapped$solar_system))
+cat("ORIGINAL SEV solar_system (unchanged)")
+print(table(df_ef_sev$solar_system))
+```
+
+# REFIT FREQ AND SEV GLM AFTER SOLAR SYSTEM MAPPING
+```{r}
+freq_model_eff_final <- glm(claim_count ~ equipment_type + equipment_age + solar_system + maintenance_int + usage_int,
+          data   = df_ef_freq_remapped,
+          family = poisson(link = "log"),
+          offset = log(exposure))
+summary(freq_model_eff_final)
+
+sev_model_ef_final <- glm(claim_amount ~ equipment_type + solar_system + equipment_age + usage_int,
+  data   = df_ef_sev_remapped,
+  family = Gamma(link = "log"))
+summary(sev_model_ef_final)
+```
+# RESIDUAL PLOT 
+```{r}
+# Residual Diagnostics 
+par(mfrow = c(2, 2))
+
+plot(freq_model_eff_final, main = "Freq Mode")
+plot(sev_model_ef_final, main = "Sev Model")
+```
+# EDA
+```{r}
+# Historical Data — Frequency Summary 
+cat("=== HISTORICAL FREQUENCY BY EQUIPMENT TYPE ===\n")
+df_ef_freq_remapped %>%
+  group_by(equipment_type) %>%
+  summarise(
+    n_policies       = n(),
+    total_claims     = sum(claim_count),
+    total_exposure   = round(sum(exposure), 1),
+    avg_claim_rate   = round(sum(claim_count) / sum(exposure), 4),
+    avg_claim_count  = round(mean(claim_count), 4),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_claim_rate)) %>%
+  print(n = Inf, width = Inf)
+
+# Historical Data — Severity Summary 
+cat("\n=== HISTORICAL SEVERITY BY EQUIPMENT TYPE ===\n")
+df_ef_sev_remapped %>%
+  group_by(equipment_type) %>%
+  summarise(
+    n_claims   = n(),
+    min_sev    = round(min(claim_amount),    0),
+    max_sev    = round(max(claim_amount),    0),
+    mean_sev   = round(mean(claim_amount),   0),
+    median_sev = round(median(claim_amount), 0),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_sev)) %>%
+  print(n = Inf, width = Inf)
+
+
+
+# Historical Data — By Solar System 
+cat("\n=== HISTORICAL FREQUENCY BY SOLAR SYSTEM ===\n")
+df_ef_freq_remapped %>%
+  group_by(solar_system) %>%
+  summarise(
+    n_policies     = n(),
+    total_claims   = sum(claim_count),
+    total_exposure = round(sum(exposure), 1),
+    avg_claim_rate = round(sum(claim_count) / sum(exposure), 4),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_claim_rate)) %>%
+  print(n = Inf, width = Inf)
+
+cat("\n=== HISTORICAL SEVERITY BY SOLAR SYSTEM ===\n")
+df_ef_sev_remapped %>%
+  group_by(solar_system) %>%
+  summarise(
+    n_claims   = n(),
+    mean_sev   = round(mean(claim_amount),   0),
+    median_sev = round(median(claim_amount), 0),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_sev)) %>%
+  print(n = Inf, width = Inf)
+```
+
+
+# INPUT INVENTORY DATA
+```{r}
+# Equipment counts by solar and equipment 
+inventory <- data.frame(
+  solar_system = rep(c("Helionis Cluster", "Bayesia System", "Oryn Delta"), each = 6),
+  equipment_type = rep(c("Quantum Bores", "Graviton Extractors", "Fexstram Carriers",
+                         "ReglAggregators", "Flux Riders", "Ion Pulverizers"), 3),
+  count = c(
+    300, 240, 150, 300, 1500, 90,   # Helionis Cluster
+    150, 120, 75, 150, 750, 45, # Bayesia System
+    100, 80, 50, 100, 500, 30 # Oryn Delta
+  )
+)
+
+# Usage % in operation by solar and equipment 
+usage_pct <- data.frame(
+  solar_system = rep(c("Helionis Cluster", "Bayesia System", "Oryn Delta"), each = 6),
+  equipment_type = rep(c("Quantum Bores", "Graviton Extractors", "Fexstram Carriers",
+                         "ReglAggregators", "Flux Riders", "Ion Pulverizers"), 3),
+  usage_pct = c(
+    0.95, 0.95, 0.90, 0.80, 0.80, 0.50,  # Helionis Cluster
+    0.80, 0.80, 0.75, 0.75, 0.80, 0.60, # Bayesia System
+    0.75, 0.75, 0.70, 0.70, 0.75, 0.50 # Oryn Delta
+  )
+)
+
+# Maintenance schedule (hrs) by solar and equipment 
+maintenance <- data.frame(
+  solar_system = rep(c("Helionis Cluster", "Bayesia System", "Oryn Delta"), each = 6),
+  equipment_type = rep(c("Quantum Bores", "Graviton Extractors", "Fexstram Carriers",
+                         "ReglAggregators", "Flux Riders", "Ion Pulverizers"), 3),
+  maintenance_hrs = c(
+    750, 750, 375, 1500, 1500, 1000, # Helionis Cluster
+    600, 600, 400, 1000, 1000, 750, # Bayesia System
+    500, 500, 250, 300, 300, 500 # Oryn Delta
+  )
+)
+
+# Average Risk Index by solar  and equipment 
+risk_index <- data.frame(
+  solar_system = rep(c("Helionis Cluster", "Bayesia System", "Oryn Delta"), each = 6),
+  equipment_type = rep(c("Quantum Bores", "Graviton Extractors", "Fexstram Carriers",
+                         "ReglAggregators", "Flux Riders", "Ion Pulverizers"), 3),
+  risk_idx = c(
+    0.69, 0.48, 0.67, 0.24, 0.24, 0.64, # Helionis Cluster
+    0.77, 0.57, 0.71, 0.26, 0.21, 0.66, # Bayesia System
+    0.93, 0.73, 0.78, 0.35, 0.20, 0.75 # Oryn Delta
+  )
+)
+
+# Service years: solar x equip x age 
+service_years <- data.frame(
+  solar_system = rep(c("Helionis Cluster", "Bayesia System", "Oryn Delta"), each = 30), # each solar have 30times because 6 equip x 5 year bands 
+  equipment_type = rep(rep(c("Quantum Bores", "Graviton Extractors", "Fexstram Carriers",
+                              "ReglAggregators", "Flux Riders", "Ion Pulverizers"), each = 5), 3), # each equip have 5 rows for year bands and for each solar
+  age_mid = rep(c(2.5, 7, 12, 17, 25), 18), # 6 quip x 3 solar
+  n_equipment = c(
+    # Helionis Cluster
+    30, 45, 180, 30, 15,   # Quantum Bores
+    24, 36, 144, 24, 12,   # Graviton Extractors
+    15, 23,  89, 15,  8,   # Fexstram Carriers
+    30, 45, 180, 30, 15,   # ReglAggregators
+    150,225, 900,150, 75,  # Flux Riders
+     9, 14,  53,  9,  5,   # Ion Pulverizers
+    # Bayesia System
+    45, 38, 59,  8,  0,    # Quantum Bores
+    36, 30, 48,  6,  0,    # Graviton Extractors
+    23, 19, 29,  4,  0,    # Fexstram Carriers
+    45, 38, 59,  8,  0,    # ReglAggregators
+    225,187,300, 38,  0,   # Flux Riders
+    14, 11, 18,  2,  0,    # Ion Pulverizers
+    # Oryn Delta
+    75, 15, 10,  0,  0,    # Quantum Bores
+    60, 12,  8,  0,  0,    # Graviton Extractors
+    37,  8,  5,  0,  0,    # Fexstram Carriers
+    75, 15, 10,  0,  0,    # ReglAggregators
+    375, 75, 50,  0,  0,   # Flux Riders
+    22,  5,  3,  0,  0     # Ion Pulverizers
+  )
+)
+```
+ Oryn Data operation only recently establish, so make sense has mostly 0s in the older bands 
+ Helionis olderst system. running logest equipment across all bands, most matured at 10-14 band. 
+
+# BUILD NB DATAFRAME
+```{r}
+set.seed(42)
+
+new_business_ef <- service_years %>%
+  filter(n_equipment > 0) %>%
+  left_join(usage_pct,   by = c("solar_system", "equipment_type")) %>%
+  left_join(maintenance, by = c("solar_system", "equipment_type")) %>%
+  left_join(risk_index,  by = c("solar_system", "equipment_type")) %>%
+  uncount(n_equipment) %>% # expand the rows 
+  mutate(
+    usage_int       = usage_pct * 24,      # Convert usage % to hours per day (0-24 scale)
+    maintenance_int = maintenance_hrs,     # Maintenance interval directly from inventory
+    equipment_age   = case_when(           # Random sampling within age bands for realistic variation
+      age_mid == 2.5 ~ runif(n(), 0,  5),
+      age_mid == 7   ~ runif(n(), 5,  9),
+      age_mid == 12  ~ runif(n(), 10, 14),
+      age_mid == 17  ~ runif(n(), 15, 19),
+      age_mid == 25  ~ runif(n(), 20, 30),
+      TRUE           ~ age_mid),
+  
+    exposure        = 1,   # Full year 
+    
+    # Standardise equipment_type names to match model factor levels
+    equipment_type  = case_when(
+      equipment_type == "Quantum Bores"       ~ "Quantum Bore",
+      equipment_type == "Graviton Extractors" ~ "Graviton Extractor",
+      equipment_type == "Fexstram Carriers"   ~ "FexStram Carrier",
+      equipment_type == "ReglAggregators"     ~ "ReglAggregators",
+      equipment_type == "Flux Riders"         ~ "Flux Rider",
+      equipment_type == "Ion Pulverizers"     ~ "Ion Pulverizer",
+      TRUE ~ equipment_type),
+    
+    equipment_type = factor(equipment_type,
+                            levels = levels(df_ef_freq_remapped$equipment_type))) %>%
+  
+  dplyr::select(solar_system, equipment_type, equipment_age,
+                maintenance_int, usage_int, exposure, risk_idx)
+
+# check final NB Table 
+cat("New business rows:", nrow(new_business_ef))
+
+# check equipment_age
+cat("Equipment age spread")
+new_business_ef %>%
+  group_by(solar_system) %>%
+  summarise(
+    min_age    = round(min(equipment_age),    1),
+    max_age    = round(max(equipment_age),    1),
+    mean_age   = round(mean(equipment_age),   1),
+    median_age = round(median(equipment_age), 1),
+    .groups = "drop"
+  ) %>%
+  print()
+
+
+print(table(new_business_ef$solar_system))
+print(table(new_business_ef$equipment_type))
+cat("usage_int:", min(new_business_ef$usage_int), "to", max(new_business_ef$usage_int), "\n")
+cat("maintenance_int:", min(new_business_ef$maintenance_int), "to", max(new_business_ef$maintenance_int), "\n")
+cat("risk_idx:", min(new_business_ef$risk_idx), "to", max(new_business_ef$risk_idx), "\n")
+
+# verify risk index map correctly
+new_business_ef %>%
+  group_by(solar_system, equipment_type) %>%
+  summarise(risk_idx = first(risk_idx), .groups = "drop") %>%
+  arrange(solar_system, equipment_type) %>%
+  print(n = Inf)
+```
+
+Final freq model :freq_model_eff_final
+Final sev model :sev_model_ef_final
+
+# NB PREDICTION
+```{r}
+# Predict base freq 
+new_business_ef <- new_business_ef %>% mutate(pred_freq = predict(freq_model_eff_final,newdata  = new_business_ef,type  = "response"),)
+
+# Predict base sev 
+new_business_ef <- new_business_ef %>%mutate( pred_sev = predict(sev_model_ef_final, newdata = new_business_ef, type    = "response"))
+
+# Expected pure premium per equipment unit
+# Pure premium = expected frequency × expected severity
+new_business_ef <- new_business_ef %>% mutate( pure_premium = pred_freq * pred_sev)
+
+# NB prediction values - split by equip x solar 
+# Summary by solar system 
+new_business_ef %>%
+  group_by(solar_system) %>%
+  summarise(
+    n_equipment       = n(),
+    avg_pred_freq     = round(mean(pred_freq),     4),
+    avg_pred_sev      = round(mean(pred_sev),      0),
+    avg_pure_premium  = round(mean(pure_premium),  0),
+    total_exp_losses  = round(sum(pure_premium),   0),
+    .groups = "drop"
+  ) %>%
+  print()
+
+# Summary by equipment type 
+new_business_ef %>%
+  group_by(equipment_type) %>%
+  summarise(
+    n_equipment      = n(),
+    avg_pred_freq    = round(mean(pred_freq),    4),
+    avg_pred_sev     = round(mean(pred_sev),     0),
+    avg_pure_premium = round(mean(pure_premium), 0),
+    total_exp_losses = round(sum(pure_premium),  0),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_exp_losses)) %>%
+  print()
+
+# Summary by solar system × equipment type
+new_business_ef %>%
+  group_by(solar_system, equipment_type) %>%
+  summarise(
+    n_equipment      = n(),
+    avg_pred_freq    = round(mean(pred_freq),    4),
+    avg_pred_sev     = round(mean(pred_sev),     0),
+    total_exp_losses = round(sum(pure_premium),  0),
+    .groups = "drop"
+  ) %>%
+  arrange(solar_system, desc(total_exp_losses)) %>%
+  print(n = Inf)
+
+# Overall total expected losses
+cat("Total expected losses (1 year):", round(sum(new_business_ef$pure_premium), 0), "\n")
+```
+Intepretaion: 
+NB total expected loss: 100600k
+By freq : Helionis --> Bayesia --> Oryn, Sev: Oryn --> Bayesia --> Helionis
+By Equipment: Flux --> Quantum --> Graviton --> reG --> Fex --> Ion
+Quantum Bores represent the highest risk per unit despite lower frequency — their average claim of 142,025 is more than double FexStram Carriers. Flux Riders drive total losses primarily through fleet size.
+By Solar System × Equipment Type: Helionis x Quantum, Oryn x Quantum, Flux x all system 
+
+# SENSE CHECK HISTORICAL VS NB FOR INSIGHT
+```{r}
+# Compare new business vs historical for Helionis
+cat("New business Helionis:\n")
+new_business_ef %>%
+  filter(solar_system == "Helionis Cluster") %>%
+  summarise(
+    avg_age     = round(mean(equipment_age),   2),
+    avg_usage   = round(mean(usage_int),       2),
+    avg_maint   = round(mean(maintenance_int), 0),
+    avg_freq    = round(mean(pred_freq),       4)
+  ) %>% print()
+
+cat("\nHistorical Helionis:\n")
+df_ef_freq_remapped %>%
+  filter(solar_system == "Helionis Cluster") %>%
+  summarise(
+    avg_age     = round(mean(equipment_age),   2),
+    avg_usage   = round(mean(usage_int),       2),
+    avg_maint   = round(mean(maintenance_int), 0),
+    avg_freq    = round(mean(claim_count/exposure), 4)
+  ) %>% print()
+```
+
+# SIMULATION 
+```{r}
+# Monte Carlo Simulation 
+set.seed(123)
+n_sim      <- 100000
+gamma_disp <- summary(sev_model_ef_final)$dispersion
+gamma_shape <- 1 / gamma_disp
+
+pred_freq_vec <- new_business_ef$pred_freq
+pred_sev_vec  <- new_business_ef$pred_sev
+
+# Simulation (no loading)
+agg_loss_ef <- numeric(n_sim)
+
+for (i in 1:n_sim) {
+  claim_counts <- rpois(length(pred_freq_vec), lambda = pred_freq_vec)
+  
+  total_loss <- 0
+  for (j in 1:length(pred_freq_vec)) {
+    if (claim_counts[j] > 0) {
+      gamma_rate <- gamma_shape / pred_sev_vec[j]
+      claims     <- rgamma(claim_counts[j],
+                           shape = gamma_shape,
+                           rate  = gamma_rate)
+      total_loss <- total_loss + sum(claims)
+    }
+  }
+  agg_loss_ef[i] <- total_loss
+}
+```
+
+# SIMULATION OUTPUT
+```{r}
+# Summary statistics 
+cat("\n=== Aggregate Loss Distribution (No Loading) ===\n")
+cat("Mean:          ", round(mean(agg_loss_ef),0), "\n")
+cat("Std Deviation: ", round(sd(agg_loss_ef),0), "\n")
+cat("Minimum:       ", round(min(agg_loss_ef),0), "\n")
+cat("Maximum:       ", round(max(agg_loss_ef),0), "\n")
+
+cat("\n=== Percentiles ===\n")
+cat("50th (Median): ", round(quantile(agg_loss_ef, 0.50),0), "\n")
+cat("75th:          ", round(quantile(agg_loss_ef, 0.75),0), "\n")
+cat("90th:          ", round(quantile(agg_loss_ef, 0.90),0), "\n")
+cat("95th:          ", round(quantile(agg_loss_ef, 0.95),0), "\n")
+cat("99th (VaR):    ", round(quantile(agg_loss_ef, 0.99),0), "\n")
+cat("99.95th (VaR):  ", round(quantile(agg_loss_ef, 0.995),0), "\n")
+
+cat("\n=== Tail Risk (TVaR) ===\n")
+var_95_ef  <- quantile(agg_loss_ef, 0.95)
+var_99_ef  <- quantile(agg_loss_ef, 0.99)
+var_995_ef <- quantile(agg_loss_ef, 0.995)
+cat("TVaR 95%:  ", round(mean(agg_loss_ef[agg_loss_ef > var_95_ef]),0), "\n")
+cat("TVaR 99%:  ", round(mean(agg_loss_ef[agg_loss_ef > var_99_ef]),0), "\n")
+cat("TVaR 99.5%:", round(mean(agg_loss_ef[agg_loss_ef > var_995_ef]),0), "\n")
+```
+
+# SIMULATION VISUALIZATION
+```{r}
+# ── Plot ──────────────────────────────────────────────────────────────────────
+ggplot(data.frame(agg_loss_ef), aes(x = agg_loss_ef)) +
+  geom_histogram(bins = 100, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = var_95_ef, colour = "orange",
+             linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = var_99_ef, colour = "red",
+             linetype = "dashed", linewidth = 1) +
+  annotate("text", x = var_95_ef, y = Inf,
+           label = "VaR 95%", vjust = 2, colour = "orange") +
+  annotate("text", x = var_99_ef, y = Inf,
+           label = "VaR 99%", vjust = 2, colour = "red") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(
+    title = "Equipment Failure Aggregate Loss Distribution (No Loading)",
+    x     = "Aggregate Loss",
+    y     = "Count"
+  ) +
+  theme_minimal()
+```
+
+# CLOSE RESULT BETWEEN SIMULATION VS NON SIMULATION
+```{r}
+# compare 100000 simulation vs no simulation
+sum(new_business_ef$pred_freq * new_business_ef$pred_sev) # no simulation
+mean(agg_loss_ef) # simulation
+```
+
+# SIMULATION WITH LOADING  
+```{r}
+set.seed(123)
+loading    <- 0.40
+n_sim      <- 100000
+gamma_disp <- summary(sev_model_ef_final)$dispersion
+
+# Simulation
+simulate_ef <- function(pred_freq_vec, pred_sev_vec, gamma_disp, loading, n_sim) {
+  
+  n_equipment <- length(pred_freq_vec)
+  
+  # Fixed earnings
+  aggregate_earnings <- sum(pred_freq_vec * pred_sev_vec) * (1 + loading)
+  
+  results <- data.frame(
+    aggregate_loss     = numeric(n_sim),
+    aggregate_earnings = numeric(n_sim),
+    profit             = numeric(n_sim),
+    loss_ratio         = numeric(n_sim)
+  )
+  
+  gamma_shape <- 1 / gamma_disp
+  
+  for (i in 1:n_sim) {
+    claim_counts <- rpois(n_equipment, lambda = pred_freq_vec)
+    
+    total_loss <- 0
+    for (j in 1:n_equipment) {
+      if (claim_counts[j] > 0) {
+        gamma_rate <- gamma_shape / pred_sev_vec[j]
+        claims     <- rgamma(claim_counts[j],
+                             shape = gamma_shape,
+                             rate  = gamma_rate)
+        total_loss <- total_loss + sum(claims)
+      }
+    }
+    
+    results$aggregate_loss[i]     <- total_loss
+    results$aggregate_earnings[i] <- aggregate_earnings
+    results$profit[i]             <- aggregate_earnings - total_loss
+    results$loss_ratio[i]         <- total_loss / aggregate_earnings
+  }
+  results
+}
+```
+
+# RUN SIMULATION
+```{r}
+
+cat("Running simulation...\n")
+sim_results_ef <- simulate_ef(
+  pred_freq_vec = new_business_ef$pred_freq,
+  pred_sev_vec  = new_business_ef$pred_sev,
+  gamma_disp    = gamma_disp,
+  loading       = loading,
+  n_sim         = n_sim
+)
+```
+
+# SIMULATION OUTPUT SUMMARY
+```{r}
+cat("\n=== Aggregate Loss ===\n")
+cat("Mean:        ", round(mean(sim_results_ef$aggregate_loss), 0), "\n")
+cat("Median:      ", round(median(sim_results_ef$aggregate_loss), 0),  "\n")
+cat("Std Dev:     ", round(sd(sim_results_ef$aggregate_loss),0), "\n")
+cat("VaR 50%:     ", round(quantile(sim_results_ef$aggregate_loss,0.50),0), "\n")
+cat("VaR 90%:     ", round(quantile(sim_results_ef$aggregate_loss,0.90),0), "\n")
+cat("VaR 95%:     ", round(quantile(sim_results_ef$aggregate_loss, 0.95),0), "\n")
+cat("VaR 99%:     ", round(quantile(sim_results_ef$aggregate_loss, 0.99),0), "\n")
+cat("VaR 99.95%:   ", round(quantile(sim_results_ef$aggregate_loss, 0.9995), 0), "\n")
+cat("TVaR 95%:    ", round(mean(sim_results_ef$aggregate_loss[sim_results_ef$aggregate_loss > quantile(sim_results_ef$aggregate_loss, 0.95)]),0), "\n")
+cat("TVaR 99%:    ", round(mean(sim_results_ef$aggregate_loss[sim_results_ef$aggregate_loss > quantile(sim_results_ef$aggregate_loss, 0.99)]),0), "\n")
+cat("TVaR 99.95%:  ", round(mean(sim_results_ef$aggregate_loss[sim_results_ef$aggregate_loss > quantile(sim_results_ef$aggregate_loss, 0.9995)]), 0), "\n")
+
+cat("\n=== Earnings ===\n")
+cat("Annual Premium (Earnings): ", round(mean(sim_results_ef$aggregate_earnings), 0), "\n")
+cat("Median Premium:               ", round(median(sim_results_ef$aggregate_earnings), 0),  "\n")
+
+cat("\n=== Profit ===\n")
+cat("Mean Profit:        ", round(mean(sim_results_ef$profit), 0), "\n")
+cat("Median Profit:      ", round(median(sim_results_ef$profit),0),  "\n")
+cat("Std Dev:            ", round(sd(sim_results_ef$profit),0), "\n")
+cat("Prob of Loss:       ", round(mean(sim_results_ef$profit < 0),4), "\n")
+cat("VaR 50% (Profit):   ", round(quantile(sim_results_ef$profit, 0.50),0), "\n")
+cat("VaR 90% (Profit):   ", round(quantile(sim_results_ef$profit, 0.10),0), "\n")
+cat("VaR 95% (Profit):   ", round(quantile(sim_results_ef$profit, 0.05),0), "\n")
+cat("VaR 99% (Profit):   ", round(quantile(sim_results_ef$profit, 0.01),0), "\n")
+cat("VaR 99.95% (Profit): ", round(quantile(sim_results_ef$profit, 0.0005),0), "\n")
+
+cat("\n=== Loss Ratio ===\n")
+cat("Mean Loss Ratio:    ", round(mean(sim_results_ef$loss_ratio),4), "\n")
+cat("Median Loss Ratio:  ", round(median(sim_results_ef$loss_ratio),4), "\n")
+```
+
+# SIMULATION RESULT Plots
+```{r}
+# Plots
+par(mfrow = c(1, 3))
+
+hist(sim_results_ef$aggregate_loss,
+     breaks = 50,
+     main   = "Aggregate Loss Distribution",
+     xlab   = "Aggregate Loss",
+     col    = "steelblue")
+
+hist(sim_results_ef$profit,
+     breaks = 50,
+     main   = "Profit Distribution",
+     xlab   = "Profit",
+     col    = "seagreen")
+
+hist(sim_results_ef$loss_ratio,
+     breaks = 50,
+     main   = "Loss Ratio Distribution",
+     xlab   = "Loss Ratio",
+     col    = "tomato")
+```
+
+# SENSITIVITY TESTING
+```{r}
+# Loading sensitivity 
+set.seed(123)
+loadings <- c(0.10, 0.20, 0.30, 0.40, 0.50)
+
+loading_results_ef <- do.call(rbind, lapply(loadings, function(l) {
+  
+sim <- simulate_ef(
+    pred_freq_vec = new_business_ef$pred_freq,
+    pred_sev_vec  = new_business_ef$pred_sev,
+    gamma_disp    = gamma_disp,
+    loading       = l,
+    n_sim         = 10000
+  )
+  
+  data.frame(
+    Loading        = paste0(l * 100, "%"),
+    Mean_Earnings  = round(mean(sim$aggregate_earnings),0),
+    Mean_Loss      = round(mean(sim$aggregate_loss), 0),
+    Mean_Profit    = round(mean(sim$profit),0),
+    Prob_of_Loss   = round(mean(sim$profit < 0), 4),
+    Mean_LossRatio = round(mean(sim$loss_ratio), 4),
+    VaR99_Loss     = round(quantile(sim$aggregate_loss, 0.99), 0),
+    TVaR99_Loss    = round(mean(sim$aggregate_loss[sim$aggregate_loss > quantile(sim$aggregate_loss, 0.99)]), 0)
+  )
+}))
+
+print(loading_results_ef)
+```
+
+#LONG TERM PROJECTION
+# ECONOMIC ASSUMPTION
+```{r}
+avg_inflation <- 0.025   # 2.5%
+avg_discount  <- 0.018   # 1.8%
+
+cat("Inflation rate:", round(avg_inflation * 100, 2), "%\n")
+cat("Discount rate:",  round(avg_discount  * 100, 2), "%\n")
+```
+
+# GROWTH ASSUMPTIONS - STABLE GROWTH
+```{r}
+base_helionis <- 2580
+base_bayesia  <- 1290
+base_oryn     <- 860
+
+annual_growth_helionis <- (1 + 0.25)^(1/10) - 1
+annual_growth_bayesia  <- (1 + 0.25)^(1/10) - 1
+annual_growth_oryn     <- (1 + 0.15)^(1/10) - 1
+```
+
+# SENSE CHECK SOLARS AND EQUIPS
+```{r}
+equipment_levels <- freq_model_eff_final$xlevels$equipment_type
+solar_levels     <- freq_model_eff_final$xlevels$solar_system
+
+print(equipment_levels)
+print(solar_levels)
+```
+
+# EQUIPS MIX PROPOTION BY SOLARS
+```{r}
+prop_helionis <- c(
+  "Quantum Bore"       = 300/2580,
+  "Graviton Extractor" = 240/2580,
+  "FexStram Carrier"   = 150/2580,
+  "ReglAggregators"    = 300/2580,
+  "Flux Rider"         = 1500/2580,
+  "Ion Pulverizer"     = 90/2580
+)
+
+prop_bayesia <- c(
+  "Quantum Bore"       = 150/1290,
+  "Graviton Extractor" = 120/1290,
+  "FexStram Carrier"   = 75/1290,
+  "ReglAggregators"    = 150/1290,
+  "Flux Rider"         = 750/1290,
+  "Ion Pulverizer"     = 45/1290
+)
+
+prop_oryn <- c(
+  "Quantum Bore"       = 100/860,
+  "Graviton Extractor" = 80/860,
+  "FexStram Carrier"   = 50/860,
+  "ReglAggregators"    = 100/860,
+  "Flux Rider"         = 500/860,
+  "Ion Pulverizer"     = 30/860
+)
+```
+
+# BUILD SUPPORTING DATAFRAME
+```{r}
+age_dist_tbl <- data.frame(
+  solar_system = c(
+    rep(solar_levels[solar_levels %in% c("Helionis Cluster")], 6),
+    rep(solar_levels[solar_levels %in% c("Bayesia System")], 6),
+    rep(solar_levels[solar_levels %in% c("Oryn Delta")], 6)
+  ),
+  equipment_type = c(
+    "Quantum Bore", "Graviton Extractor", "FexStram Carrier",
+    "ReglAggregators", "Flux Rider", "Ion Pulverizer",
+    "Quantum Bore", "Graviton Extractor", "FexStram Carrier",
+    "ReglAggregators", "Flux Rider", "Ion Pulverizer",
+    "Quantum Bore", "Graviton Extractor", "FexStram Carrier",
+    "ReglAggregators", "Flux Rider", "Ion Pulverizer"
+  ),
+  lt5 = c(
+    30/300, 24/240, 15/150, 30/300, 150/1500, 9/90,
+    45/150, 36/120, 23/75, 45/150, 225/750, 14/45,
+    75/100, 60/80, 37/50, 75/100, 375/500, 22/30
+  ),
+  yr5_9 = c(
+    45/300, 36/240, 23/150, 45/300, 225/1500, 14/90,
+    38/150, 30/120, 19/75, 38/150, 187/750, 11/45,
+    15/100, 12/80, 8/50, 15/100, 75/500, 5/30
+  ),
+  yr10_14 = c(
+    180/300, 144/240, 89/150, 180/300, 900/1500, 53/90,
+    59/150, 48/120, 29/75, 59/150, 300/750, 18/45,
+    10/100, 8/80, 5/50, 10/100, 50/500, 3/30
+  ),
+  yr15_19 = c(
+    30/300, 24/240, 15/150, 30/300, 150/1500, 9/90,
+    8/150, 6/120, 4/75, 8/150, 38/750, 2/45,
+    0/100, 0/80, 0/50, 0/100, 0/500, 0/30
+  ),
+  yr20plus = c(
+    15/300, 12/240, 8/150, 15/300, 75/1500, 5/90,
+    0/150, 0/120, 0/75, 0/150, 0/750, 0/45,
+    0/100, 0/80, 0/50, 0/100, 0/500, 0/30
+  ),
+  stringsAsFactors = FALSE
+)
+
+usage_tbl <- data.frame(
+  solar_system = c(
+    rep(solar_levels[solar_levels %in% c("Helionis Cluster")], 6),
+    rep(solar_levels[solar_levels %in% c("Bayesia System")], 6),
+    rep(solar_levels[solar_levels %in% c("Oryn Delta")], 6)
+  ),
+  equipment_type = rep(
+    c("Quantum Bore", "Graviton Extractor", "FexStram Carrier",
+      "ReglAggregators", "Flux Rider", "Ion Pulverizer"),
+    3
+  ),
+  usage_pct = c(
+    0.95, 0.95, 0.90, 0.80, 0.80, 0.50,
+    0.80, 0.80, 0.75, 0.75, 0.80, 0.60,
+    0.75, 0.75, 0.70, 0.70, 0.75, 0.50
+  ),
+  maintenance_int = c(
+    750, 750, 375, 1500, 1500, 1000,
+    600, 600, 400, 1000, 1000, 750,
+    500, 500, 250, 300, 300, 500
+  ),
+  stringsAsFactors = FALSE
+)
+
+risk_tbl <- data.frame(
+  solar_system = c(
+    rep(solar_levels[solar_levels %in% c("Helionis Cluster")], 6),
+    rep(solar_levels[solar_levels %in% c("Bayesia System")], 6),
+    rep(solar_levels[solar_levels %in% c("Oryn Delta")], 6)
+  ),
+  equipment_type = rep(
+    c("Quantum Bore", "Graviton Extractor", "FexStram Carrier",
+      "ReglAggregators", "Flux Rider", "Ion Pulverizer"),
+    3
+  ),
+  risk_idx = c(
+    0.69, 0.48, 0.67, 0.24, 0.24, 0.64,
+    0.77, 0.57, 0.71, 0.26, 0.21, 0.66,
+    0.93, 0.73, 0.78, 0.35, 0.20, 0.75
+  ),
+  stringsAsFactors = FALSE
+)
+```
+
+# LONG TERM NB GENERATOR
+```{r}
+make_nb_data_ef_lt <- function(
+    n_helionis, n_bayesia, n_oryn,
+    prop_helionis, prop_bayesia, prop_oryn,
+    usage_tbl, risk_tbl, age_dist_tbl,
+    equipment_levels, solar_levels
+) {
+  
+  helionis_df <- data.frame(
+    solar_system   = "Helionis Cluster",
+    equipment_type = names(prop_helionis),
+    n_equipment    = round(prop_helionis * n_helionis),
+    stringsAsFactors = FALSE
+  )
+  
+  bayesia_df <- data.frame(
+    solar_system   = "Bayesia System",
+    equipment_type = names(prop_bayesia),
+    n_equipment    = round(prop_bayesia * n_bayesia),
+    stringsAsFactors = FALSE
+  )
+  
+  oryn_df <- data.frame(
+    solar_system   = "Oryn Delta",
+    equipment_type = names(prop_oryn),
+    n_equipment    = round(prop_oryn * n_oryn),
+    stringsAsFactors = FALSE
+  )
+  
+  equipment_counts <- dplyr::bind_rows(helionis_df, bayesia_df, oryn_df)
+  
+  equipment_units <- tidyr::uncount(equipment_counts, weights = n_equipment)
+  
+  age_df <- equipment_units %>%
+    dplyr::left_join(age_dist_tbl, by = c("solar_system", "equipment_type"))
+  
+  sampled_age_band <- apply(
+    age_df[, c("lt5", "yr5_9", "yr10_14", "yr15_19", "yr20plus")],
+    1,
+    function(p) sample(c("lt5", "yr5_9", "yr10_14", "yr15_19", "yr20plus"),
+                       size = 1, prob = p)
+  )
+  
+  age_df$age_band <- sampled_age_band
+  
+  # treated as continuous intervals not integer year 
+  age_df$equipment_age <- dplyr::case_when(
+    age_df$age_band == "lt5"      ~ runif(nrow(age_df), 0, 5),
+    age_df$age_band == "yr5_9"    ~ runif(nrow(age_df), 5, 10),
+    age_df$age_band == "yr10_14"  ~ runif(nrow(age_df), 10, 15),
+    age_df$age_band == "yr15_19"  ~ runif(nrow(age_df), 15, 20),
+    age_df$age_band == "yr20plus" ~ runif(nrow(age_df), 20, 30)
+  )
+  
+  nb_data <- age_df %>%
+    dplyr::left_join(usage_tbl, by = c("solar_system", "equipment_type")) %>%
+    dplyr::left_join(risk_tbl,  by = c("solar_system", "equipment_type")) %>%
+    dplyr::mutate(
+      exposure = 1,
+      usage_int = usage_pct * 24
+    ) %>%
+    dplyr::select(
+      equipment_type, solar_system, equipment_age,
+      maintenance_int, usage_int, risk_idx, exposure
+    )
+  
+  # Force exact model factor levels
+  nb_data$equipment_type <- factor(nb_data$equipment_type, levels = equipment_levels)
+  nb_data$solar_system   <- factor(nb_data$solar_system,   levels = solar_levels)
+  
+  nb_data
+}
+```
+service-year categories were converted into continuous age values by sampling unifromly within each age interval.
+
+# LT SIMULATION FUNCTION WITH LOADING 
+```{r}
+simulate_ef_segment <- function(pred_freq_vec, pred_sev_vec, gamma_disp, loading, n_sim) {
+  
+  n_units <- length(pred_freq_vec)
+  gamma_shape <- 1 / gamma_disp
+  
+  premium_revenue <- sum(pred_freq_vec * pred_sev_vec) * (1 + loading)
+  
+  results <- data.frame(
+    aggregate_cost = numeric(n_sim),
+    revenue        = numeric(n_sim),
+    net_revenue    = numeric(n_sim),
+    loss_ratio     = numeric(n_sim)
+  )
+  
+  for (i in seq_len(n_sim)) {
+    claim_counts <- rpois(n_units, lambda = pred_freq_vec)
+    
+    total_loss <- 0
+    for (j in seq_along(pred_freq_vec)) {
+      if (claim_counts[j] > 0) {
+        gamma_rate <- gamma_shape / pred_sev_vec[j]
+        claims <- rgamma(claim_counts[j], shape = gamma_shape, rate = gamma_rate)
+        total_loss <- total_loss + sum(claims)
+      }
+    }
+    
+    results$aggregate_cost[i] <- total_loss
+    results$revenue[i]        <- premium_revenue
+    results$net_revenue[i]    <- premium_revenue - total_loss
+    results$loss_ratio[i]     <- total_loss / premium_revenue
+  }
+  
+  results
+}
+```
+
+# PARAMETERS
+```{r}
+set.seed(123)
+n_sim   <- 100000    # each run = full 10 years
+n_years <- 10
+loading <- 0.40
+
+gamma_disp <- summary(sev_model_ef_final)$dispersion
+```
+
+# PRE BUILD 10-YRS NB DATA
+```{r}
+
+cat("Building new business data for all 10 years...\n")
+
+yearly_nb_data <- list()  # stores fleet data for each year
+
+for (yr in 1:n_years) {
+  
+  cat("  Building year", yr, "data...\n")
+  
+  # Fleet size
+  n_hel <- round(base_helionis * (1 + annual_growth_helionis)^yr)
+  n_bay <- round(base_bayesia  * (1 + annual_growth_bayesia)^yr)
+  n_ory <- round(base_oryn     * (1 + annual_growth_oryn)^yr)
+  
+  # Build data
+  nb_data_yr <- make_nb_data_ef_lt(
+    n_helionis       = n_hel,
+    n_bayesia        = n_bay,
+    n_oryn           = n_ory,
+    prop_helionis    = prop_helionis,
+    prop_bayesia     = prop_bayesia,
+    prop_oryn        = prop_oryn,
+    usage_tbl        = usage_tbl,
+    risk_tbl         = risk_tbl,
+    age_dist_tbl     = age_dist_tbl,
+    equipment_levels = equipment_levels,
+    solar_levels     = solar_levels
+  )
+  
+  # Safety checks
+  nb_data_yr$equipment_type <- factor(nb_data_yr$equipment_type,levels = equipment_levels)
+  nb_data_yr$solar_system   <- factor(nb_data_yr$solar_system,levels = solar_levels)
+  nb_data_yr <- nb_data_yr[!is.na(nb_data_yr$equipment_type) &!is.na(nb_data_yr$solar_system), ]
+  
+  # Predictions
+  nb_data_yr$pred_freq <- predict(freq_model_eff_final,newdata = nb_data_yr,type    = "response")
+  nb_data_yr$pred_sev  <- predict(sev_model_ef_final,newdata = nb_data_yr,type    = "response")
+  
+  # Apply inflation to severity
+  inflation_factor    <- (1 + avg_inflation)^yr
+  nb_data_yr$pred_sev <- nb_data_yr$pred_sev * inflation_factor
+  
+  # Calculate discount factor
+  discount_factor <- 1 / (1 + avg_discount)^yr
+  
+  # Store
+  yearly_nb_data[[yr]] <- list(
+    nb_data         = nb_data_yr,
+    n_exposures     = nrow(nb_data_yr),
+    inflation_factor = inflation_factor,
+    discount_factor  = discount_factor,
+    
+    # Pre-calculate annual earnings (fixed premium per year)
+    annual_earnings  = sum(nb_data_yr$pred_freq * nb_data_yr$pred_sev) * (1 + loading)
+  )
+}
+
+cat("All 10 years data built! Now running joint simulation...\n")
+
+```
+
+# JOINT 10-YRS SIMULATION - SIMULATE ALL 10-YRS EACH RUN THEN SUM UP
+```{r}
+
+# Storage for joint simulation results
+joint_sim <- data.frame(
+  # Nominal cumulative totals per run
+  total_cost        = numeric(n_sim),  # sum of 10 years losses
+  total_revenue     = numeric(n_sim),  # sum of 10 years premiums
+  total_netrev      = numeric(n_sim),  # sum of 10 years profits
+  
+  # PV cumulative totals per run
+  pv_total_cost     = numeric(n_sim),
+  pv_total_revenue  = numeric(n_sim),
+  pv_total_netrev   = numeric(n_sim)
+)
+
+cat("Running", n_sim, "joint simulations...\n")
+
+for (i in 1:n_sim) {
+  
+  if (i %% 100 == 0) cat("  Simulation run", i, "of", n_sim, "...\n")
+  
+  run_total_cost       <- 0
+  run_total_revenue    <- 0
+  run_total_netrev     <- 0
+  run_pv_total_cost    <- 0
+  run_pv_total_revenue <- 0
+  run_pv_total_netrev  <- 0
+  
+  # Loop through all 10 years within this single run
+  for (yr in 1:n_years) {
+    
+    pred_freq_yr    <- yearly_nb_data[[yr]]$nb_data$pred_freq
+    pred_sev_yr     <- yearly_nb_data[[yr]]$nb_data$pred_sev
+    annual_earnings <- yearly_nb_data[[yr]]$annual_earnings
+    discount_factor <- yearly_nb_data[[yr]]$discount_factor
+    n_equipment_yr  <- yearly_nb_data[[yr]]$n_exposures
+    
+    # Simulate claims for this year
+    claim_counts <- rpois(n_equipment_yr, lambda = pred_freq_yr)
+    
+    yr_total_loss <- 0
+    for (j in 1:n_equipment_yr) {
+      if (claim_counts[j] > 0) {
+        gamma_shape <- 1 / gamma_disp
+        gamma_rate  <- gamma_shape / pred_sev_yr[j]
+        claims      <- rgamma(claim_counts[j],
+                              shape = gamma_shape,
+                              rate  = gamma_rate)
+        yr_total_loss <- yr_total_loss + sum(claims)
+      }
+    }
+    
+    yr_netrev <- annual_earnings - yr_total_loss
+    
+    # Accumulate nominal
+    run_total_cost    <- run_total_cost    + yr_total_loss
+    run_total_revenue <- run_total_revenue + annual_earnings
+    run_total_netrev  <- run_total_netrev  + yr_netrev
+    
+    # Accumulate PV
+    run_pv_total_cost    <- run_pv_total_cost    + yr_total_loss    * discount_factor
+    run_pv_total_revenue <- run_pv_total_revenue + annual_earnings  * discount_factor
+    run_pv_total_netrev  <- run_pv_total_netrev  + yr_netrev        * discount_factor
+  }
+  
+  # Store this run's 10-year totals
+  joint_sim$total_cost[i]       <- run_total_cost
+  joint_sim$total_revenue[i]    <- run_total_revenue
+  joint_sim$total_netrev[i]     <- run_total_netrev
+  joint_sim$pv_total_cost[i]    <- run_pv_total_cost
+  joint_sim$pv_total_revenue[i] <- run_pv_total_revenue
+  joint_sim$pv_total_netrev[i]  <- run_pv_total_netrev
+}
+
+cat("Joint simulation complete!\n")
+
+```
+
+# SENSE CHECK
+```{r}
+# Annual premium for Year 1
+annual_yr1 <- yearly_nb_data[[1]]$annual_earnings
+cat("Year 1 annual premium:", round(annual_yr1, 0), "\n")
+
+# 10-year aggregate premium
+cat("10-year aggregate premium:", round(mean(joint_sim$total_revenue), 0), "\n")
+
+# Quick check: should be roughly annual × 10 (plus growth)
+cat("10x Year 1:", round(annual_yr1 * 10, 0), "\n")
+```
+
+# SUMMARY OUTPUT
+```{r}
+# Risk count
+avg_risk_count   <- round(mean(sapply(yearly_nb_data, function(x) x$n_exposures)), 0)
+total_risk_count <- round(sum(sapply(yearly_nb_data, function(x) x$n_exposures)), 0)
+
+cat("\n=== FOR EXCEL TABLE ===\n")
+cat("Average Annual Risk Count:  ", avg_risk_count, "\n")
+cat("Total Risk Count (10 yr):   ", total_risk_count, "\n")
+cat("Loading:                     40%\n")
+
+# NOMINAL 
+cat("\n=== NOMINAL (Future Value) ===\n")
+
+cat("\n--- Aggregate Premium ---\n")
+cat("Total (Fixed):  ", round(mean(joint_sim$total_revenue),0), "\n")
+cat("Mean:           ", round(mean(joint_sim$total_revenue),0), "\n")
+cat("Median:         ", round(median(joint_sim$total_revenue),0), "\n")
+cat("50%:            ", round(quantile(joint_sim$total_revenue, 0.50), 0), "\n")
+cat("90%:            ", round(quantile(joint_sim$total_revenue, 0.90), 0), "\n")
+cat("95%:            ", round(quantile(joint_sim$total_revenue, 0.95), 0), "\n")
+cat("99%:            ", round(quantile(joint_sim$total_revenue, 0.99), 0), "\n")
+cat("99.95%:          ", round(quantile(joint_sim$total_revenue, 0.9995),0), "\n")
+
+cat("\n--- Aggregate Loss ---\n")
+cat("Mean:           ", round(mean(joint_sim$total_cost), 0), "\n")
+cat("Median:         ", round(median(joint_sim$total_cost), 0), "\n")
+cat("StdDev:         ", round(sd(joint_sim$total_cost),0), "\n")
+cat("50%:            ", round(quantile(joint_sim$total_cost, 0.50),0), "\n")
+cat("90%:            ", round(quantile(joint_sim$total_cost, 0.90),0), "\n")
+cat("95%:            ", round(quantile(joint_sim$total_cost, 0.95),0), "\n")
+cat("99%:            ", round(quantile(joint_sim$total_cost, 0.99),0), "\n")
+cat("99.95%:          ", round(quantile(joint_sim$total_cost, 0.9995),0), "\n")
+cat("TVaR 99%:       ", round(mean(joint_sim$total_cost[
+                        joint_sim$total_cost >
+                        quantile(joint_sim$total_cost, 0.99)]),0), "\n")
+cat("TVaR 99.95%:     ", round(mean(joint_sim$total_cost[
+                        joint_sim$total_cost >
+                        quantile(joint_sim$total_cost, 0.9995)]),0), "\n")
+
+cat("\n--- Aggregate Profit (Net Revenue) ---\n")
+cat("Mean:           ", round(mean(joint_sim$total_netrev),              0), "\n")
+cat("Median:         ", round(median(joint_sim$total_netrev),            0), "\n")
+cat("StdDev:         ", round(sd(joint_sim$total_netrev),                0), "\n")
+cat("50%:            ", round(quantile(joint_sim$total_netrev, 0.50),    0), "\n")
+cat("90%:            ", round(quantile(joint_sim$total_netrev, 0.10),    0), "\n")
+cat("95%:            ", round(quantile(joint_sim$total_netrev, 0.05),    0), "\n")
+cat("99%:            ", round(quantile(joint_sim$total_netrev, 0.01),    0), "\n")
+cat("99.95%:          ", round(quantile(joint_sim$total_netrev, 0.0005),   0), "\n")
+cat("Prob of Loss:   ", round(mean(joint_sim$total_netrev < 0), 4),       "\n")
+
+# PRESENT VALUE 
+cat("\n=== PRESENT VALUE (Today's Dollars) ===\n")
+
+cat("\n--- PV Aggregate Premium ---\n")
+cat("Total (Fixed):  ", round(mean(joint_sim$pv_total_revenue),           0), "\n")
+cat("Mean:           ", round(mean(joint_sim$pv_total_revenue),           0), "\n")
+cat("Median:         ", round(median(joint_sim$pv_total_revenue),         0), "\n")
+cat("50%:            ", round(quantile(joint_sim$pv_total_revenue, 0.50), 0), "\n")
+cat("90%:            ", round(quantile(joint_sim$pv_total_revenue, 0.90), 0), "\n")
+cat("95%:            ", round(quantile(joint_sim$pv_total_revenue, 0.95), 0), "\n")
+cat("99%:            ", round(quantile(joint_sim$pv_total_revenue, 0.99), 0), "\n")
+cat("99.95%:          ", round(quantile(joint_sim$pv_total_revenue, 0.9995),0), "\n")
+
+cat("\n--- PV Aggregate Loss ---\n")
+cat("Mean:           ", round(mean(joint_sim$pv_total_cost),              0), "\n")
+cat("Median:         ", round(median(joint_sim$pv_total_cost),            0), "\n")
+cat("StdDev:         ", round(sd(joint_sim$pv_total_cost),                0), "\n")
+cat("50%:            ", round(quantile(joint_sim$pv_total_cost, 0.50),    0), "\n")
+cat("90%:            ", round(quantile(joint_sim$pv_total_cost, 0.90),    0), "\n")
+cat("95%:            ", round(quantile(joint_sim$pv_total_cost, 0.95),    0), "\n")
+cat("99%:            ", round(quantile(joint_sim$pv_total_cost, 0.99),    0), "\n")
+cat("99.95%:          ", round(quantile(joint_sim$pv_total_cost, 0.9995),   0), "\n")
+cat("TVaR 99%:       ", round(mean(joint_sim$pv_total_cost[
+                        joint_sim$pv_total_cost >
+                        quantile(joint_sim$pv_total_cost, 0.99)]),         0), "\n")
+cat("TVaR 99.95%:     ", round(mean(joint_sim$pv_total_cost[
+                        joint_sim$pv_total_cost >
+                        quantile(joint_sim$pv_total_cost, 0.9995)]),        0), "\n")
+
+cat("\n--- PV Aggregate Profit (Net Revenue) ---\n")
+cat("Mean:           ", round(mean(joint_sim$pv_total_netrev),              0), "\n")
+cat("Median:         ", round(median(joint_sim$pv_total_netrev),            0), "\n")
+cat("StdDev:         ", round(sd(joint_sim$pv_total_netrev),                0), "\n")
+cat("50%:            ", round(quantile(joint_sim$pv_total_netrev, 0.50),    0), "\n")
+cat("90%:            ", round(quantile(joint_sim$pv_total_netrev, 0.10),    0), "\n")
+cat("95%:            ", round(quantile(joint_sim$pv_total_netrev, 0.05),    0), "\n")
+cat("99%:            ", round(quantile(joint_sim$pv_total_netrev, 0.01),    0), "\n")
+cat("99.95%:          ", round(quantile(joint_sim$pv_total_netrev, 0.0005),   0), "\n")
+cat("PV Prob of Loss:", round(mean(joint_sim$pv_total_netrev < 0), 4),       "\n")
+```
+
+########## STRESS TESTING
+# BASE ASSUMPTIONS
+```{r}
+library(dplyr)
+library(tidyr)
+
+# 1. BASE ASSUMPTIONS
+set.seed(123)
+
+n_sim   <- 100000
+loading <- 0.40
+
+# Use fitted Gamma dispersion from final severity model
+gamma_disp <- summary(sev_model_ef_final)$dispersion
+```
+
+# BASE PREDICTIONS AND FIXED PREMIUM
+```{r}
+# Base predicted outputs
+base_pred_freq <- new_business_ef$pred_freq
+base_pred_sev  <- new_business_ef$pred_sev
+
+# Fixed base premium revenue for all stress scenarios
+base_premium_revenue <- sum(base_pred_freq * base_pred_sev) * (1 + loading)
+
+```
+
+# SIMULATION FUNCTION WITH FIXED PREMIUM
+```{r}
+simulate_ef_fixed_premium <- function(pred_freq_vec, pred_sev_vec,
+                                      gamma_disp, fixed_premium, n_sim) {
+  
+  n_equipment <- length(pred_freq_vec)
+  gamma_shape <- 1 / gamma_disp
+  
+  results <- data.frame(
+    aggregate_loss     = numeric(n_sim),
+    aggregate_earnings = rep(fixed_premium, n_sim),
+    profit             = numeric(n_sim),
+    loss_ratio         = numeric(n_sim)
+  )
+  
+  for (i in 1:n_sim) {
+    claim_counts <- rpois(n_equipment, lambda = pred_freq_vec)
+    
+    total_loss <- 0
+    for (j in 1:n_equipment) {
+      if (claim_counts[j] > 0) {
+        gamma_rate <- gamma_shape / pred_sev_vec[j]
+        claims <- rgamma(claim_counts[j],
+                         shape = gamma_shape,
+                         rate  = gamma_rate)
+        total_loss <- total_loss + sum(claims)
+      }
+    }
+    
+    results$aggregate_loss[i]     <- total_loss
+    results$profit[i]             <- fixed_premium - total_loss
+    results$loss_ratio[i]         <- total_loss / fixed_premium
+  }
+  
+  results
+}
+```
+
+# STRESS-TEST WRAPPER
+```{r}
+run_ef_stress_1yr <- function(freq_stress = 1.00,
+                              sev_stress  = 1.00,
+                              scenario_name = "Base") {
+  
+  stressed_freq <- base_pred_freq * freq_stress
+  stressed_sev  <- base_pred_sev  * sev_stress
+  
+  sim_results <- simulate_ef_fixed_premium(
+    pred_freq_vec = stressed_freq,
+    pred_sev_vec  = stressed_sev,
+    gamma_disp    = gamma_disp,
+    fixed_premium = base_premium_revenue,
+    n_sim         = n_sim
+  )
+  
+  var50  <- as.numeric(quantile(sim_results$aggregate_loss, 0.50))
+  var90  <- as.numeric(quantile(sim_results$aggregate_loss, 0.90))
+  var95  <- as.numeric(quantile(sim_results$aggregate_loss, 0.95))
+  var99  <- as.numeric(quantile(sim_results$aggregate_loss, 0.99))
+  var995 <- as.numeric(quantile(sim_results$aggregate_loss, 0.9995))
+  
+  tvar95  <- mean(sim_results$aggregate_loss[sim_results$aggregate_loss > var95])
+  tvar99  <- mean(sim_results$aggregate_loss[sim_results$aggregate_loss > var99])
+  tvar995 <- mean(sim_results$aggregate_loss[sim_results$aggregate_loss > var995])
+  
+  profit50  <- as.numeric(quantile(sim_results$profit, 0.50))   # ← new
+  profit90  <- as.numeric(quantile(sim_results$profit, 0.10))   # ← new lower tail
+  profit95  <- as.numeric(quantile(sim_results$profit, 0.05))   # ← new lower tail
+  profit99  <- as.numeric(quantile(sim_results$profit, 0.01))   # ← new lower tail
+  profit995 <- as.numeric(quantile(sim_results$profit, 0.0005))  # ← new lower tail
+  
+  
+  data.frame(
+    Scenario              = scenario_name,
+    N_Exposures           = length(base_pred_freq),
+    Fixed_Premium_Revenue = base_premium_revenue,
+    
+    Mean_Aggregate_Loss   = mean(sim_results$aggregate_loss),
+    SD_Aggregate_Loss     = sd(sim_results$aggregate_loss),
+    
+    VaR_50_Loss           = var50,   
+    VaR_90_Loss           = var90,   
+    VaR_95_Loss           = var95,
+    VaR_99_Loss           = var99,
+    VaR_99_5_Loss         = var995,
+    
+    # TVaR
+    TVaR_95_Loss          = tvar95,
+    TVaR_99_Loss          = tvar99,
+    TVaR_99_5_Loss        = tvar995,
+    # Profit statistics
+    Mean_Net_Revenue      = mean(sim_results$profit),
+    SD_Net_Revenue        = sd(sim_results$profit),
+    # Profit percentiles
+    Profit_50             = profit50,   # ← new
+    Profit_90             = profit90,   # ← new
+    Profit_95             = profit95,   # ← new
+    Profit_99             = profit99,   # ← new
+    Profit_99_5           = profit995,  # ← new
+    # Risk metrics
+    Prob_Loss             = mean(sim_results$profit < 0),
+    Mean_Loss_Ratio       = mean(sim_results$loss_ratio)
+  )
+}
+```
+
+# RUN SCENARIOS
+```{r}
+ef_st_base <- run_ef_stress_1yr(
+  freq_stress   = 1.00,
+  sev_stress    = 1.00,
+  scenario_name = "Base"
+)
+
+ef_st_freq <- run_ef_stress_1yr(
+  freq_stress   = 1.20,
+  sev_stress    = 1.00,
+  scenario_name = "Frequency +20%"
+)
+
+ef_st_sev <- run_ef_stress_1yr(
+  freq_stress   = 1.00,
+  sev_stress    = 1.20,
+  scenario_name = "Severity +20%"
+)
+
+ef_st_combined <- run_ef_stress_1yr(
+  freq_stress   = 1.20,
+  sev_stress    = 1.20,
+  scenario_name = "Freq +20% & Sev +20%"
+)
+
+ef_stress_1yr_summary <- dplyr::bind_rows(
+  ef_st_base,
+  ef_st_freq,
+  ef_st_sev,
+  ef_st_combined
+)
+```
+
+# RESULT 
+```{r}
+ef_stress_1yr_summary %>%
+  mutate(
+    across(
+      c(
+        N_Exposures, Fixed_Premium_Revenue, Mean_Aggregate_Loss,
+        SD_Aggregate_Loss, Mean_Net_Revenue, SD_Net_Revenue,
+        VaR_95_Loss, VaR_99_Loss, VaR_99_5_Loss,
+        TVaR_95_Loss, TVaR_99_Loss, TVaR_99_5_Loss,
+        Profit_50, Profit_90, Profit_95, Profit_99, Profit_99_5
+      ),
+      ~ round(.x, 0)
+    ),
+    Mean_Loss_Ratio = round(Mean_Loss_Ratio, 4),
+    Prob_Loss       = round(Prob_Loss, 4)
+  ) %>%
+  print()
+```
+
+
+# FORMATTED OUTPUT
+```{r}
+cat("\n=== STRESS TEST RESULTS — SHORT TERM (1 YEAR) ===\n")
+cat("Base Premium Revenue:", round(base_premium_revenue, 0), "\n")
+cat("Number of Exposures: ", nrow(base_pred_freq), "\n")
+cat("Loading:              40%\n\n")
+
+# Full summary table 
+cat("=== FULL SUMMARY TABLE ===\n")
+ef_stress_1yr_summary %>%
+  mutate(across(where(is.numeric), ~ round(.x, 0))) %>%
+  as.data.frame() %>%
+  print()
+
+# FOR EXCEL TABLE ANALYSIS
+cat("\n=== FOR EXCEL TABLE ===\n")
+
+for (i in 1:nrow(ef_stress_1yr_summary)) {
+  row <- ef_stress_1yr_summary[i, ]
+  cat("\n--- Scenario:", row$Scenario, "---\n")
+  cat("Risk Count:       ", row$N_Exposures,                          "\n")
+  cat("Loading:           40%\n")
+ cat("\n--- Aggregate Premium ---\n")
+  cat("Total (Fixed):", round(row$Fixed_Premium_Revenue,    0), "\n")
+  
+  cat("\n--- Aggregate Loss ---\n")
+  cat("Mean:         ", round(row$Mean_Aggregate_Loss,      0), "\n")
+  cat("Std Dev:      ", round(row$SD_Aggregate_Loss,        0), "\n")
+  cat("Median:       ", round(row$VaR_50_Loss,              0), "\n")
+  cat("50%:          ", round(row$VaR_50_Loss,              0), "\n")
+  cat("90%:          ", round(row$VaR_90_Loss,              0), "\n")
+  cat("95%:          ", round(row$VaR_95_Loss,              0), "\n")
+  cat("99%:          ", round(row$VaR_99_Loss,              0), "\n")
+  cat("99.5%:        ", round(row$VaR_99_5_Loss,            0), "\n")
+  cat("TVaR 95%:     ", round(row$TVaR_95_Loss,             0), "\n")
+  cat("TVaR 99%:     ", round(row$TVaR_99_Loss,             0), "\n")
+  cat("TVaR 99.5%:   ", round(row$TVaR_99_5_Loss,           0), "\n")
+  
+  cat("\n--- Aggregate Profit (Net Revenue) ---\n")
+  cat("Mean:         ", round(row$Mean_Net_Revenue,         0), "\n")
+  cat("Std Dev:      ", round(row$SD_Net_Revenue,           0), "\n")
+  cat("Median:       ", round(row$Profit_50,                0), "\n")
+  cat("50%:          ", round(row$Profit_50,                0), "\n")
+  cat("90%:          ", round(row$Profit_90,                0), "\n")
+  cat("95%:          ", round(row$Profit_95,                0), "\n")
+  cat("99%:          ", round(row$Profit_99,                0), "\n")
+  cat("99.5%:        ", round(row$Profit_99_5,              0), "\n")
+  
+  cat("\n--- Risk Metrics ---\n")
+  cat("Prob of Loss: ", round(row$Prob_Loss * 100,          4), "%\n")
+  cat("Loss Ratio:   ", round(row$Mean_Loss_Ratio * 100,    2), "%\n")
+  
+  cat("\n--- Capital Gap above Premium ---\n")
+  cap_gap_99  <- max(0, row$VaR_99_Loss   - row$Fixed_Premium_Revenue)
+  cap_gap_995 <- max(0, row$VaR_99_5_Loss - row$Fixed_Premium_Revenue)
+  cat("At VaR 99%:   ", round(cap_gap_99,                   0), "\n")
+  cat("At VaR 99.5%: ", round(cap_gap_995,                  0), "\n")
+}
+```
+
+# COMPARE TABLE 
+```{r}
+# Comparison table (change vs base) 
+cat("\n=== CHANGE VS BASE SCENARIO ===\n")
+base_loss <- ef_stress_1yr_summary$Mean_Aggregate_Loss[1]
+base_profit <- ef_stress_1yr_summary$Mean_Net_Revenue[1]
+base_var99 <- ef_stress_1yr_summary$VaR_99_Loss[1]
+
+ef_stress_1yr_summary %>%
+  mutate(
+    Change_Mean_Loss   = round(Mean_Aggregate_Loss - base_loss,0),
+    Pct_Change_Loss    = round((Mean_Aggregate_Loss/base_loss - 1) * 100, 2),
+    Change_Mean_Profit = round(Mean_Net_Revenue - base_profit,0),
+    Change_VaR99       = round(VaR_99_Loss - base_var99,0),
+    Capital_Gap_995    = round(pmax(0, VaR_99_5_Loss - Fixed_Premium_Revenue), 0)
+  ) %>%
+  dplyr::select(
+    Scenario,
+    Mean_Aggregate_Loss,
+    Change_Mean_Loss,
+    Pct_Change_Loss,
+    Mean_Net_Revenue,
+    Change_Mean_Profit,
+    VaR_99_Loss,
+    Change_VaR99,
+    Prob_Loss,
+    Mean_Loss_Ratio,
+    Capital_Gap_995
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 0))) %>%
+  as.data.frame() %>% 
+  print()  
+```
+
+
+# SCENARIO TESTING RDS EXTRACT
+```{r}
+saveRDS(
+  sim_results_ef$aggregate_loss,
+  file = paste0(bronze_path, "ef_base_agg_loss.rds")
+)
+
+cat("Done! Length:", length(sim_results_ef$aggregate_loss), "\n")
+# Should print: 100000
+```
+
+# RDS FULL DATA FOR REFERENCE 
+```{r}
+# Save FULL simulation results for EQF
+saveRDS(
+  sim_results_ef,
+  file = paste0(bronze_path, "ef_short_term_sim_full_results.rds")
+)
+
+cat("Full EQF results saved!\n")
+cat("Rows:", nrow(sim_results_ef), "\n")
+cat("Columns:", ncol(sim_results_ef), "\n")
+cat("Column names:", names(sim_results_ef), "\n")
+```
+
+
+
