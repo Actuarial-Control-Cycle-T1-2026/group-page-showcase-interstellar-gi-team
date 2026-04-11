@@ -19,10 +19,9 @@ library(glmmTMB)
 library(kableExtra)
 library(MASS)
 
-bronze_path <- paste0(getwd(), '/Bronze/')
-
-ef_freq_model_clean <- read_csv(paste0(bronze_path, "ef_claim_freq_update.csv"))
-ef_sev_model_clean <- read_csv(paste0(bronze_path, "ef_claim_sev_update.csv"))
+output_path <- paste0(getwd(), '/00_DataPrep/OutputData/')
+ef_freq_model_clean <- read_csv(paste0(output_path, "ef_claim_freq_update.csv"))
+ef_sev_model_clean <- read_csv(paste0(output_path, "ef_claim_sev_update.csv"))
 ```
 
 # CHECK DATA
@@ -1523,30 +1522,13 @@ ef_stress_1yr_summary %>%
   print()  
 ```
 
-
 # SCENARIO TESTING RDS EXTRACT
 ```{r}
 saveRDS(
   sim_results_ef$aggregate_loss,
-  file = paste0(bronze_path, "ef_base_agg_loss.rds")
+  file = paste0(output_path, "ef_base_agg_loss.rds")
 )
-
 cat("Done! Length:", length(sim_results_ef$aggregate_loss), "\n")
-# Should print: 100000
-```
-
-# RDS FULL DATA FOR REFERENCE 
-```{r}
-# Save FULL simulation results for EQF
-saveRDS(
-  sim_results_ef,
-  file = paste0(bronze_path, "ef_short_term_sim_full_results.rds")
-)
-
-cat("Full EQF results saved!\n")
-cat("Rows:", nrow(sim_results_ef), "\n")
-cat("Columns:", ncol(sim_results_ef), "\n")
-cat("Column names:", names(sim_results_ef), "\n")
 ```
 
 
