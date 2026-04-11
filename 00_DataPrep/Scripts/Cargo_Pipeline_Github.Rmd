@@ -9,7 +9,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r location}
-getwd()
+getwd() 
 intermediate_path <- paste0(getwd(), '/00_DataPrep/IntermediateOutput/')
 output_path <- paste0(getwd(), '/00_DataPrep/OutputData/')
 list.files(intermediate_path)
