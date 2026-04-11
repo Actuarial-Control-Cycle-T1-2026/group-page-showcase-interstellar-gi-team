@@ -74,7 +74,7 @@ All required functions are self-contained.
 
 ## Workers’ Compensation (WC)
 
-Ensure the following files are available in the WC folder:
+Download the following scripts in the WC folder:
 
 - WC_NB_data_generator.R  
 - WC_NB_data_generator_all.R  
