@@ -18,10 +18,9 @@ library(glmmTMB)
 library(kableExtra)
 library(MASS)
 
-bronze_path <- paste0(getwd(), '/Bronze/')
-
-cargo_freq_model_clean <- read_csv(paste0(bronze_path, "cargo_claim_freq_update1.csv"))
-cargo_sev_model_clean <- read_csv(paste0(bronze_path, "cargo_claim_sev_update1.csv"))
+output_path <- paste0(getwd(), '/00_DataPrep/OutputData/')
+cargo_freq_model_clean <- read_csv(paste0(output_path, "cargo_claim_freq_update1.csv"))
+cargo_sev_model_clean <- read_csv(paste0(output_path, "cargo_claim_sev_update1.csv"))
 ```
 
 # CHECK DATA CLEANING
@@ -1628,19 +1627,9 @@ print(revenue_table)
 
 # EXPORT AGGREGARE LOSS (SHORT TERM) FOR SCENARIO TESTING 
 ```{r}
-#  Full results — all columns
-saveRDS(
-  sim_total,
-  file = paste0(bronze_path, "cargo_st_base_full.rds")
-)
-cat("Full results saved!\n")
-cat("Rows:", nrow(sim_total), "\n")
-cat("Cols:", ncol(sim_total), "\n")
-
-# Aaron's version — aggregate loss only 
 saveRDS(
   sim_total$aggregate_cost,
-  file = paste0(bronze_path, "cargo_st_base_agg_loss.rds")
+  file = paste0(output_path, "cargo_st_base_agg_loss.rds")
 )
 cat("Aggregate loss only saved!\n")
 cat("Length:", length(sim_total$aggregate_cost), "\n")
