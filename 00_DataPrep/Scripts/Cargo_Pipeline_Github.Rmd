@@ -8,30 +8,22 @@ date: "2026-03-07"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r cars}
-# 0. Import Packages
-library(dplyr)
-library(readr)
-library(stringr)
-```
-
 ```{r location}
 getwd()
-list.files(paste0(getwd(), '/Bronze/'))
+intermediate_path <- paste0(getwd(), '/00_DataPrep/IntermediateOutput/')
+output_path <- paste0(getwd(), '/00_DataPrep/OutputData/')
+list.files(intermediate_path)
 ```
 
 ```{r Cargo Basic Joining}
-getwd()
-bronze_path <- paste0(getwd(), '/Bronze/')
 library(dplyr)
 library(readr)
 library(stringr)
 library(tidyr)
 
 # Stage 1: Load Raw Data
-cargo_freq_raw    <- read_csv(paste0(bronze_path,"cargo_claim_freq.csv"))
-cargo_sev_raw    <- read_csv(paste0(bronze_path,"cargo_claim_sev.csv"))
-
+cargo_freq_raw    <- read_csv(paste0(intermediate_path,"cargo_claim_freq.csv"))
+cargo_sev_raw    <- read_csv(paste0(intermediate_path,"cargo_claim_sev.csv"))
 cargo_claim_freq <- cargo_freq_raw
 cargo_claim_sev  <- cargo_sev_raw
 
@@ -629,20 +621,18 @@ cat("cargo_type unique values:", unique(cargo_claim_sev$cargo_type), "\n")
 cat("container_type unique values:", unique(cargo_claim_sev$container_type), "\n")
 
 
-# Stage 11 
-# Export CSV
+# Stage 11 - Export CSV
 options(scipen = 999)
 
-## Stage 10: Export clean data
+## Export clean data
 write.csv(
   cargo_claim_freq,
-  file.path(bronze_path, "cargo_claim_freq_update1.csv"),
+  file.path(output_path, "cargo_claim_freq_update1.csv"),
   row.names = FALSE 
 )
-
 write.csv(
   cargo_claim_sev,
-  file.path(bronze_path, "cargo_claim_sev_update1.csv"),
+  file.path(output_path, "cargo_claim_sev_update1.csv"),
   row.names = FALSE
 )
 
