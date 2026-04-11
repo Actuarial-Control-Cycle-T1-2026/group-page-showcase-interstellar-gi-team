@@ -5,19 +5,18 @@ _"We Love Control Cycle." – George Washington_
 
 ---
 
-### Congrats on completing the [2026 SOA Research Challenge](https://www.soa.org/research/opportunities/2026-student-research-case-study-challenge/)!
+## Instructions: How to Run the Code
 
+The project is structured into three main folders:
+- `00_DataPrep`
+- `01_Pricing`
+- `02_Capital`
 
-> Now it's time to build your own website to showcase your work.  
-> Creating a website using GitHub Pages is simple and a great way to present your project.
-
-This page is written in Markdown.
-- Click the [assignment link](https://classroom.github.com/a/FxAEmrI0) to accept your assignment.
+Please follow the steps below in order.
 
 ---
 
-> Be creative! You can embed or link your [data](player_data_salaries_2020.csv), [code](sample-data-clean.ipynb), and [images](ACC.png) here.
+# Folder 1: 00_DataPrep
 
-More information on GitHub Pages can be found [here](https://pages.github.com/).
-
-![](Actuarial.gif)
+## Step 1: Input Data
+Download the input Excel files from **SOA_2026_Case_Study_Materials** and place them in:
