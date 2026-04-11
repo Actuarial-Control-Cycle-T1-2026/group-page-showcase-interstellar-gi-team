@@ -19,7 +19,7 @@ Please follow the steps below in order.
 # Folder 1: 00_DataPrep
 
 ## Step 1: Input Data
-Download the input Excel files from **SOA_2026_Case_Study_Materials** and place them in: 00_DataPrep/RawData
+Download the input Excel files from **SOA_2026_Case_Study_Materials** and place them in: `00_DataPrep/RawData`
 
 ---
 
